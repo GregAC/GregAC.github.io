@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 1 - Getting Started</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 1 - Getting Started</h1>
+  <p>I was intrigued by the Raspberry Pi Pico when it was released. Whilst the dual
+m0+ cores weren&rsquo;t out of the ordinary the peripherals around them offered some
+interesting possibilities. In particular the PIO (programmable IO) units are
+very unique, they have programmable state machines that can directly control
+GPIO pins letting you implement all manner of protocols and behaviour without
+having to worry the two CPUs with tight loops doing bit-banging, plus you get
+very precise timing control. The DMA engine was also interesting; channels can
+be chained together and trigger each other through memory writes and DMA
+transfers can be paced by the rate peripherals consume data.  I wondered how far
+you could push the DMA engine to do complex things without needing the CPUs to
+do anything.  At only £3.60 plus delivery how could I resist picking one up?</p>
+<p>I&rsquo;m writing this in several parts, here&rsquo;s what I&rsquo;ve written so far if you
+want to skip ahead:</p>
+<ul>
+<li>Part 1 (this one) - Getting started and first impressions</li>
+<li><a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/">Part 2 - Running LED PWM animations entirely with the DMA engine</a></li>
+</ul>
+<h2 id="getting-started">Getting Started</h2>
+<figure class="text-center">
+    <img src="/media/play_pico/pico.jpg"
+         alt="Raspberry Pi Pico Board"/> 
+</figure>
+
+<p>The Pico has extensive documentation. I followed through the <a href="https://datasheets.raspberrypi.org/pico/getting-started-with-pico.pdf">getting started
+guide</a> to
+install the C/C++ SDK on a Raspberry Pi 4 using <a href="https://github.com/raspberrypi/pico-setup">pico
+setup</a>. This was initially frustrated
+by using a 8 GiB SD Card. I ran out of space on my first attempt, removed some
+of the larger packages you get with a standard Raspian install (e.g.wolfram
+engine is over 1 GiB) and tried again. It ran out of space on the second attempt
+too, luckily I had a 16 GiB card to hand so after a fresh raspbian install and a
+third attempt at running pico-setup I was good to go! pico-setup itself takes a
+bit of time so be ready to wait.</p>
+<p>Loading code can be done over USB, the Pico appears as a flash drive you can
+just drop the .u2f files the toolchain produces on. The Pico will reboot as soon
+as you copy the file over and run your code. In order to do this you need to
+power-cycle the board (e.g. by plugging and unplugging the USB) and hold the
+bootsel button. Fine for the occasional code load but it will quickly get
+tedious during development. Luckily the Pico has an SWD (serial wire debug)
+interface available on a 3 pin header which can be driven directly from a Pi
+GPIO interface using OpenOCD or from another Pico. I made a cable with some 3
+pin dupoint connectors to connect the two (but you can always buy/use pre made
+jumper cables to do the same thing). My crimping skills leave something to be
+desired so it can be a little flaky, I need to wiggle the wires to make it work
+sometimes but overall it works well. With an SWD interface you get full debug
+capabilities and can quickly load new binaries without unplugging or power
+cycling anything or pressing any buttons. I can highly recommend setting it up
+if you&rsquo;re going to develop with C or C++ on the Pico. It&rsquo;s described in the
+getting started guide and simple to do.</p>
+<p>For serial out you can either use USB over serial or drive serial to a couple of
+the Pico pins and wire them up to the Pi GPIO (or indeed anything else that
+understands 3.3v level serial). I&rsquo;ve just used the USB option so far to minimise
+the number of wires I need to connect things up.</p>
+<p>The other thing to sort out was a development environment on my laptop rather
+than the Pi. It works admirably well for the purpose but especially when driving
+my 4k monitor the laptop provides a smoother experience. I use Ubuntu 18.04 LTS.
+I didn&rsquo;t try running the pico-setup script, instead I followed the instruction
+to get and install the SDK and toolchain from the getting started guide along
+with the instructions to install VSCode. This worked fine though you need a
+newer version of cmake than the one available for 18.04 LTS using apt but you
+can get a suitable version with snap or build your own. I needed to change the
+CMake generator to &lsquo;Unix Makefiles&rsquo; in VSCode as <a href="https://www.raspberrypi.org/forums/viewtopic.php?f=145&amp;t=299970">described on the RPi
+forum</a></p>
+<p>To connect the development environment on the laptop to the Pico I continued to
+use the Pi just to run OpenOCD. It connects to the Pico with the SWD interface
+and listens on a port for GDB to connect over the network. VSCode uses GDB
+behind the scenes to load and run code and implement its interactive debugging
+features. So I can use VSCode on the laptop to directly work with the Pico.</p>
+<p>If you want to setup something similar when setting up your VSCode project
+following the getting started guide take your <code>launch.json</code> from
+<code>ide/vscode/launch-remote-openocd.json</code> in the
+<a href="https://github.com/raspberrypi/pico-examples/">pico-examples</a> repository,
+you&rsquo;ll need to modify it so the <code>gdbTarget</code> setting points to your Pi. You also
+need to run OpenOCD so it listens for remote connections (by default it only
+accepts local connections). This is done by providing OpenOCD with an extra
+<code>bindto</code> command:</p>
+<pre><code>openocd -f interface/raspberrypi-swd.cfg -f target/rp2040.cfg -c 'bindto 0.0.0.0'
+</code></pre><p>Note you should only do this on a network you trust, as any machine can now
+control OpenOCD on your Pi without authentication.</p>
+<h2 id="first-impressions">First Impressions</h2>
+<p>I&rsquo;m definitely impressed with the pico so far, especially for the price. Whilst
+you can get similarly cheap boards with the faster M3 or M4 arm cores they tend
+to come from places like eBay and aliexpress and documentation and support can
+be patchy. The pico is a first party board with a very capable microcontroller
+and comprehensive documentation. In particular I&rsquo;m impressed with the SWD
+interface. Given a Pi to run it from you get advanced interactive debug in a
+modern IDE (VSCode) for the price of a few wires. Other first party solutions to
+microcontroller debug tend to be pricey debug modules.</p>
+<p>I had a few teething troubles following the getting started guide, but no huge
+roadblocks and people were putting solutions online for various things
+within a couple of days of the Pico&rsquo;s release. Raspberry Pi are taking these
+suggestions and fixes on board and have already done a documentation update.</p>
+<p>Going deeper the <a href="https://datasheets.raspberrypi.org/rp2040/rp2040-datasheet.pdf">RP2040
+datasheet</a> and
+the <a href="https://rptl.io/pico-doxygen">C/C++ SDK documentation</a> were very
+comprehensive. I did find myself delving into the SDK source upon occasion to
+work out what was going on or how to do something particular but the
+documentation still helped point me in the right direction and my dives into the
+source quickly found the information I needed. The SDK has a few gaps in terms
+of not offering an API for every possible thing you can do with the peripherals
+(e.g. the GPIO pins have controllable drive strengths, as far as I could tell
+the SDK doesn&rsquo;t have a function to set these), but it&rsquo;s easy enough to write the
+registers yourself when you find these gaps. In particular the SDK provides a
+nice set of structures so it&rsquo;s easy to modify registers directly, especially
+when combined with autocomplete in VSCode there&rsquo;s no diving into the datasheet
+to work out addresses, just use the device structs to access what you need.</p>
+<p>I&rsquo;m going to spend some time playing with the peripheral set, in particular
+concentrating on the DMA and PIO, seeing what I can accomplish with a minimum of
+code running on the CPU.</p>
+
+</div>
+
+</main>
+</body>
+</html>

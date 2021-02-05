@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Blog on Greg Chadwick</title>
+    <link>https://gregchadwick.co.uk/blog/</link>
+    <description>Recent content in Blog on Greg Chadwick</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-uk</language>
+    <lastBuildDate>Sun, 31 Jan 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Playing with the Pico Part 2 - Driving PWM with DMA</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/</link>
+      <pubDate>Sun, 31 Jan 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/</guid>
+      <description>One of the things that interested me on the Pico was the DMA engine. For those who don&amp;rsquo;t know DMA stands for Direct Memory Access. It&amp;rsquo;s something which can do memory copies for you. A basic DMA engine takes a source address, a destination address and a length and copies data from source to destination. This frees up the CPU from memory copy loops allowing it to do other things. They&amp;rsquo;re vital parts of many computer systems and have been for decades, so what&amp;rsquo;s so interesting about the Pico&amp;rsquo;s DMA?</description>
+    </item>
+    
+    <item>
+      <title>Playing with the Pico Part 1 - Getting Started</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt1/</link>
+      <pubDate>Sat, 30 Jan 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt1/</guid>
+      <description>I was intrigued by the Raspberry Pi Pico when it was released. Whilst the dual m0+ cores weren&amp;rsquo;t out of the ordinary the peripherals around them offered some interesting possibilities. In particular the PIO (programmable IO) units are very unique, they have programmable state machines that can directly control GPIO pins letting you implement all manner of protocols and behaviour without having to worry the two CPUs with tight loops doing bit-banging, plus you get very precise timing control.</description>
+    </item>
+    
+  </channel>
+</rss>

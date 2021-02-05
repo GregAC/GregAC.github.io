@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 2 - Driving PWM with DMA</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 2 - Driving PWM with DMA</h1>
+  <p>One of the things that interested me on the Pico was the DMA engine. For those
+who don&rsquo;t know DMA stands for Direct Memory Access. It&rsquo;s something which can do
+memory copies for you. A basic DMA engine takes a source address, a destination
+address and a length and copies data from source to destination. This frees up
+the CPU from memory copy loops allowing it to do other things. They&rsquo;re vital
+parts of many computer systems and have been for decades, so what&rsquo;s so
+interesting about the Pico&rsquo;s DMA?</p>
+<p>The Pico&rsquo;s DMA has several extra features. It has 12 channels, allowing 12 copy
+operations at once. It allows chaining where one channel finishing triggers
+another. The DMA can control peripherals too, as their registers look like any
+other memory to the DMA, so one DMA channel can control another. Combined with
+chaining this allows some interesting possibilities.</p>
+<p>I decided to build a little demo where RGB LEDs were driven by the Pico&rsquo;s PWM
+channels. I&rsquo;d have a predefined colour sequence for each of the LEDs to follow
+and I&rsquo;d use the DMA to do as much of work as possible, reading the colour
+sequence from memory and sending it straight to the PWM channels without CPU
+involvement.</p>
+<p>I put together a setup on a breadboard with 5 RGB LEDs using 15 of the 16 PWM
+channels. Beware that the RP2040 has a max IO draw of 50 mA, which I may be
+exceeding with my test setup, choose your resistors with care if you try this
+yourself.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/leds.jpg"
+         alt="Raspberry Pi Pico on a breadboard with 5 RGB LEDs"/> 
+</figure>
+
+<h2 id="controlling-pwm-with-dma">Controlling PWM with DMA</h2>
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pwm_dma">github</a></em></p>
+<p>Streaming values to a single PWM channel using DMA is straight-forward. Point
+the read address at the values, point the write address at the PWM channel,
+have it only auto increment the read address and set it going.</p>
+<p>The DMA will dutifully stream your desired values to the PWM channel, but
+there&rsquo;s a problem, timing. The DMA will write the values across as quickly as it
+can. Depending on the PWM cycle time you may just see the start and end value
+from your list actually effect the PWM output.</p>
+<p>The Pico provides a solution in the form of DREQs. A DREQ tells a DMA channel
+when to transfer data. The PWM provides a DREQ at the end of its cycle, which
+solves our timing problem.</p>
+<p>My first step to check I&rsquo;d got the basics right was to fade an LED up by putting increasing
+values from 0 to 2^16 - 1 into a buffer. Using a DMA channel to stream these out to
+a PWM channel, copying a new value on each PWM DREQ. The core of the code is
+below along with a highly exciting video if it in action.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">uint32_t fade[<span style="color:#ae81ff">256</span>];
+
+<span style="color:#66d9ef">for</span> (<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>; i <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">256</span>; <span style="color:#f92672">++</span>i) {
+    <span style="color:#75715e">// We need a value from 0 - (2^16 - 1), i ranges from 0 - 255. Squaring here gives us
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// almost the full range of values whilst provided some gamma correction to give a more
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// linear fade effect.
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// Shift by 16 as the LED is on channel B of the slice.
+</span><span style="color:#75715e"></span>    fade[i] <span style="color:#f92672">=</span> (i <span style="color:#f92672">*</span> i) <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>;
+}
+
+<span style="color:#75715e">// Determine the PWM slice the LED is connected to
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">int</span> led_pwm_slice_num <span style="color:#f92672">=</span> pwm_gpio_to_slice_num(PICO_DEFAULT_LED_PIN);
+
+<span style="color:#75715e">// Setup DMA channel to drive the PWM
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">int</span> pwm_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+
+dma_channel_config pwm_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(pwm_dma_chan);
+<span style="color:#75715e">// Transfers 32-bits at a time, increment read address so we pick up a new fade value each
+</span><span style="color:#75715e">// time, don&#39;t increment writes address so we always transfer to the same PWM register.
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DMA_SIZE_32);
+channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, true);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, false);
+<span style="color:#75715e">// Transfer when PWM slice that is connected to the LED asks for a new value
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DREQ_PWM_WRAP0 <span style="color:#f92672">+</span> led_pwm_slice_num);
+
+<span style="color:#75715e">// Setup the channel and set it going
+</span><span style="color:#75715e"></span>dma_channel_configure(
+    pwm_dma_chan,
+    <span style="color:#f92672">&amp;</span>pwm_dma_chan_config,
+    <span style="color:#f92672">&amp;</span>pwm_hw<span style="color:#f92672">-&gt;</span>slice[led_pwm_slice_num].cc, <span style="color:#75715e">// Write to PWM counter compare
+</span><span style="color:#75715e"></span>    fade, <span style="color:#75715e">// Read values from fade buffer
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">256</span>, <span style="color:#75715e">// 256 values to copy
+</span><span style="color:#75715e"></span>    true <span style="color:#75715e">// Start immediately.
+</span><span style="color:#75715e"></span>);
+</code></pre></td></tr></table>
+</div>
+</div><video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/led_fade.mp4" type="video/mp4">
+</video>
+<h2 id="multiple-pwm-channels-with-three-dma-channels">Multiple PWM channels with three DMA channels</h2>
+<p>This was a good start, we can fill a buffer with various brightness values for
+an LED, connect the LED to a PWM channel and leave the DMA to do the rest. The
+issue is you need one DMA channel per PWM slice (two channels per slice). So to
+drive all 16 PWM channels you have to use 8 DMA channels in parallel. Can we do
+better?</p>
+<p>We can, thanks to chaining and DMA trigger registers. We&rsquo;ll use two DMA
+channels, one, the PWM DMA channel, copies values from the buffer to the PWM
+slices, The other, the control DMA channel, will tell the PWM DMA channel where
+to write next. The PWM DMA channel is chained to the control DMA channel so they
+ping-pong off each other. The PWM DMA channel copies a value to a PWM slice,
+then chains to the control DMA channel. This writes a new write address to a PWM
+DMA channel trigger register which sets the PWM DMA channel off again.</p>
+<p>Here&rsquo;s the code that sets it all up, <code>pwm_data</code> is a pre-computed set of values
+for the PWM channels. The DMA channels will iterate through the data, copying
+values to each of the PWM slices in turn. There&rsquo;s 2 PWM channels per slice so 8
+values gives us 16 PWM settings representing a single point in the LED colour
+cycle we want.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">45
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">46
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">47
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">48
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">49
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">50
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">51
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">52
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">int</span> pwm_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+<span style="color:#66d9ef">int</span> control_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+
+dma_channel_config pwm_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(pwm_dma_chan);
+channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Increment on read so we read a new element of `pwm_data` each time
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, true);
+<span style="color:#75715e">// Don&#39;t increment on write, though it doesn&#39;t really matter as there&#39;s only a single transfer
+</span><span style="color:#75715e">// and the control DMA channel gives us a new write address each time
+</span><span style="color:#75715e"></span>channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, false);
+channel_config_set_chain_to(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, control_dma_chan);
+
+dma_channel_configure(
+    pwm_dma_chan,
+    <span style="color:#f92672">&amp;</span>pwm_dma_chan_config,
+    NULL, <span style="color:#75715e">// No write address yet the control DMA channel will set one
+</span><span style="color:#75715e"></span>    pwm_data, <span style="color:#75715e">// Read from the pre-computed pwm_data
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">1</span>, <span style="color:#75715e">// Just do a single transfer from pwm_data to a PWM slice
+</span><span style="color:#75715e"></span>    false <span style="color:#75715e">// Don&#39;t start yet, the control DMA channel will trigger it
+</span><span style="color:#75715e"></span>);
+
+<span style="color:#75715e">// Setup data for the control DMA channel
+</span><span style="color:#75715e">// For each slice we&#39;re using we want the address of its counter compare
+</span><span style="color:#75715e">// register. The control DMA channel will read this address from the buffer
+</span><span style="color:#75715e">// and write it to the PWM DMA channel write address triggering a transfer
+</span><span style="color:#75715e">// to the PWM slice.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">for</span> (<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> NUM_PWM_SLICES; <span style="color:#f92672">++</span>i) {
+    pwm_dma_list[i] <span style="color:#f92672">=</span> (uint32_t)<span style="color:#f92672">&amp;</span>pwm_hw<span style="color:#f92672">-&gt;</span>slice[pwm_slices[i]].cc;
+}
+
+<span style="color:#75715e">// Terminate the list with a null value, when this is written to the DMA
+</span><span style="color:#75715e">// Write Address for the PWM DWM channel it won&#39;t trigger anything stopping
+</span><span style="color:#75715e">// the chaining and everything comes to a halt.
+</span><span style="color:#75715e"></span>pwm_dma_list[NUM_PWM_SLICES] <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+dma_channel_config control_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(control_dma_chan);
+channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>control_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Increment on read so we go through all the PWM slice addresses from `pwm_dma_list`
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>control_dma_chan_config, true);
+<span style="color:#75715e">// Don&#39;t increment on write, we always want to write to the PWM DMA channel write address
+</span><span style="color:#75715e"></span>channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>control_dma_chan_config, false);
+
+dma_channel_configure(
+    control_dma_chan,
+    <span style="color:#f92672">&amp;</span>control_dma_chan_config,
+    <span style="color:#75715e">// Write to the PWM DMA channel write address
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al2_write_addr_trig,
+    <span style="color:#75715e">// Read from the list of PWM slice CC register addresses
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>pwm_dma_list,
+    <span style="color:#ae81ff">1</span>, <span style="color:#75715e">// Transfer a single element of `pwm_dma_list` to the PWM DMA channel write address
+</span><span style="color:#75715e"></span>    false <span style="color:#75715e">// Don&#39;t start yet
+</span><span style="color:#75715e"></span>);
+</code></pre></td></tr></table>
+</div>
+</div><p>The control DMA channel reads from <code>pwm_dma_list</code>, which contains the addresses
+of the PWM slice registers. These get written into the PWM DMA channel&rsquo;s write
+address register. One of these writes triggers the PWM DMA channel to do a
+transfer, reading an element of <code>pwm_data</code> out to a PWM slice. After the
+transfer is chains back to the control DMA channel which writes the next PWM
+slice register address and the everything repeats. The final element of
+<code>pwm_dma_list</code> is 0 which doesn&rsquo;t trigger anything, stopping the process.</p>
+<p>I tested this by starting the control DMA channel once to see if I&rsquo;d got things
+setup correctly by seeing all the LEDs lit up with the expected colours.</p>
+<p>In order to update all of the channels every time we reach the end of a PWM
+cycle we need something extra. We could just sit in a tight loop delaying for an
+appropriate time triggering the control channel each time but I wanted to do as
+much as possible without using the CPU.</p>
+<p>The answer is a third DMA channel, the trigger DMA channel, which writes to the
+control DMA channel read address trigger starting a cycle of PWM writes. You can
+link this to the DREQ of one of the PWM channels so it triggers every time the
+PWM cycle ends.</p>
+<p>The data in <code>pwm_data</code> has 512 values for each PWM slice (512 x 8 slices = 4096
+values all in all), so we tell the trigger DMA channel to do 512 transfers which
+will go through the full set of PWM data.</p>
+<p>The code to setup the trigger channel is below:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">int</span> trigger_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+
+dma_channel_config trigger_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(trigger_dma_chan);
+channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Don&#39;t increment read or write, the trigger DMA channel just writes the
+</span><span style="color:#75715e">// same thing to the same place 512 times
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, false);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, false);
+<span style="color:#75715e">// Only do a transfer when we reach the end of a PWM cycle.
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, DREQ_PWM_WRAP0);
+
+dma_channel_configure(
+    trigger_dma_chan,
+    <span style="color:#f92672">&amp;</span>trigger_dma_chan_config,
+    <span style="color:#75715e">// Write to the Control DMA channel read address
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>dma_hw<span style="color:#f92672">-&gt;</span>ch[control_dma_chan].al3_read_addr_trig,
+    <span style="color:#75715e">// Read from location containing the address of the beginning of pwm_dma_list
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>dma_list_ptr,
+    <span style="color:#ae81ff">512</span>,
+    false <span style="color:#75715e">// Don&#39;t start yet
+</span><span style="color:#75715e"></span>);
+</code></pre></td></tr></table>
+</div>
+</div><p>To get a continuous cycle we need to loop starting the trigger DMA channel and
+setting the PWM DMA channel read address to the beginning of the <code>pwm_data</code> data
+buffer. For testing purposes our loop will do this then wait a few seconds for
+the cycle to run before repeating which the following code accomplishes:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">while</span> (true) {
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al1_read_addr <span style="color:#f92672">=</span> pwm_data;
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[trigger_dma_chan].al3_read_addr_trig <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>dma_list_ptr;
+    sleep_ms(<span style="color:#ae81ff">3000</span>);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>I setup a test pattern in <code>pwm_data</code> that fades some colours in and out This
+allowed me to check everything was working as it should, here&rsquo;s another slightly
+more exciting video:</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/test_sequence.mp4" type="video/mp4">
+</video>
+<h2 id="repeating-the-colour-loop-with-interrupts">Repeating the colour loop with interrupts</h2>
+<p>Can we get rid of the busy loop? Interrupts are the answer. The DMA can raise an
+interrupt when the trigger DMA channel is done, set it going again in the
+interrupt handler and we&rsquo;ll have an uninterrupted loop of the colour cycle with
+the CPU only having to deal with the occasional interrupt to keep it going.</p>
+<p>Here&rsquo;s the interrupt handler and the setup code, note the line at the end of
+handler writing to <code>dma_hw-&gt;ints0</code>, this clears the interrupt from the DMA.
+Without it the CPU loops forever handling the same interrupt again and again,
+guess what I missed off the first time I tried this?</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">begin_pwm_sequence</span>() {
+    <span style="color:#75715e">// Point PWM DMA channel to the beginning of pwm_data and set the trigger DMA channel off to
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// begin a new sequence
+</span><span style="color:#75715e"></span>    dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al1_read_addr <span style="color:#f92672">=</span> pwm_data;
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[trigger_dma_chan].al3_read_addr_trig <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>dma_list_ptr;
+}
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">dma_irh</span>() {
+    begin_pwm_sequence();
+
+    <span style="color:#75715e">// Clear interrupt for trigger DMA channel.
+</span><span style="color:#75715e"></span>    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> trigger_dma_chan);
+}
+</code></pre></td></tr></table>
+</div>
+</div><br/>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Setup interrupt handler to fire when trigger DMA channel is done with its transfers
+</span><span style="color:#75715e"></span>dma_channel_set_irq0_enabled(trigger_dma_chan, true);
+irq_set_exclusive_handler(DMA_IRQ_0, dma_irh);
+irq_set_enabled(DMA_IRQ_0, true);
+
+begin_pwm_sequence();
+
+<span style="color:#66d9ef">while</span> (true) {
+    <span style="color:#75715e">// Loop forever sleeping until an interrupt is seen
+</span><span style="color:#75715e"></span>    __wfi();
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>So we&rsquo;re done? Not quite here&rsquo;s another video</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/bug.mp4" type="video/mp4">
+</video>
+<p>We get a couple of repetitions of the test sequence then something goes wrong.
+What&rsquo;s happening? When we trigged the cycle in a loop with a time delay
+everything was fine, the interrupt is doing the same thing but with different
+timing. It looks like some kind of race condition, two things trying to read or
+write the same value where the order they do it in changes the behaviour.</p>
+<p>I put a <code>busy_wait_us</code> at the beginning of the interrupt to it delay a little.
+Normally this is a very bad idea (you want interrupts to be quick not sitting in
+time delay loops) but it&rsquo;s a useful debugging technique.</p>
+<p>Lo and behold this fixes things and we get continuous repetitions of the test
+sequence.</p>
+<p>What&rsquo;s the race condition we&rsquo;re seeing? It&rsquo;s to do with the read address of the
+PWM data channel. When the trigger DMA channel sends its interrupt the other
+channels are still running. If we get to the interrupt code quickly enough they
+won&rsquo;t be done yet. The interrupt handler then prematurely resets the PWM DMA
+channel read address and it reads the first few values as if they were the last
+few values. Then we start again a few elements into <code>pwm_data</code>.  This gives the
+weird result from the video.</p>
+<p>To fix it we want to avoid updating the PWM DMA channel read address until we
+know the sequence is done. The key to fixing it is the 0 value at the end of
+<code>pwm_dma_list</code>. When this is written to the PWM DMA write address register the
+sequence is done.</p>
+<p>The easy fix is to use a polling loop checking the PWM DMA write address waiting
+until it&rsquo;s 0. Ordinarily a polling loop in an interrupt is a very bad idea but
+in this case I think it&rsquo;s reasonable. The control and PWM DMA channels don&rsquo;t
+have much work to do and will finish rapidly so the loop won&rsquo;t wait for long.
+Here&rsquo;s the final interrupt handler:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">9
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">dma_irh</span>() {
+    <span style="color:#75715e">// Wait for PWM DMA channel to be done
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span>(dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al1_write_addr <span style="color:#f92672">!=</span> <span style="color:#ae81ff">0</span>);
+
+    begin_pwm_sequence();
+
+    <span style="color:#75715e">// Clear interrupt for trigger DMA channel.
+</span><span style="color:#75715e"></span>    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> trigger_dma_chan);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>With that the race condition is fixed and we can run our full sequence over and
+over with the CPU only having to execute an occasional interrupt handler.
+I made a more interesting colour sequences with some rainbow colours, here&rsquo;s a
+video of the final result</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/rainbow.mp4" type="video/mp4">
+</video>
+<h2 id="another-race-condition-fix">Another Race Condition Fix</h2>
+<p>I added counters to the DMA interrupt handler to see how much time it delayed
+waiting for the PWM DMA to finish. The polling looping did two iterations at
+most so it seems reasonable to keep in the interrupt handler. Though what if
+were longer, is there another way to fix the race condition?</p>
+<p>One solution is a second DMA interrupt. You can configure a channel to interrupt
+in one of two scenarios</p>
+<ol>
+<li>It&rsquo;s finished all its transfers</li>
+<li>Something writes a 0 value to one of its trigger registers</li>
+</ol>
+<p>Scenario 2 is handy where you have the chaining setup we have with the PWM and
+control DMA channels. Scenario 1 is no good as you&rsquo;d get an interrupt every time
+they ping-pong back and forth, scenario 2 gives you an interrupt when we&rsquo;ve
+reached the end of the chaining.</p>
+<p>We can use the 0 value interrupt to know when the PWM DMA channel is done,
+the issue is if we enable it from the start we&rsquo;ll get an interrupt at every new
+set of PWM values rather than one once we&rsquo;ve had the whole sequence.</p>
+<p>To avoid this we enable the 0 value interrupt when we&rsquo;re in the interrupt
+handling the end of the DMA trigger channel. Then we start the whole sequence
+again when the 0 value interrupt occurs.</p>
+<p>The code to deal with this is as follows, note we have to be careful we don&rsquo;t
+miss the NULL value being written and end up waiting forever for the interrupt.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Flag indicating whether we&#39;re waiting for the end of the PWM DMA channel.
+</span><span style="color:#75715e">// Starts off false indicating we haven&#39;t enabled the interrupt we need to wait
+</span><span style="color:#75715e">// for it.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">bool</span> waiting_for_pwm_end <span style="color:#f92672">=</span> false;
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">dma_irh</span>() {
+    <span style="color:#66d9ef">if</span> (<span style="color:#f92672">!</span>waiting_for_pwm_end) {
+        <span style="color:#75715e">// At the end of the sequence (trigger DMA channel finished interrupt)
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// we need to wait for the PWM DMA channel to finish.
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// First turn on the interrupt that will fire when the PWM DMA channel
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// is finished.
+</span><span style="color:#75715e"></span>        dma_channel_set_irq0_enabled(pwm_dma_chan, true);
+        <span style="color:#75715e">// Then check if it has finished already, if we skip this it might have
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// finished before we turn on the interrupt, so we never see the
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// interrupt and wait forever (a missed wake-up).
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">if</span>(dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al1_write_addr <span style="color:#f92672">!=</span> <span style="color:#ae81ff">0</span>) {
+            <span style="color:#75715e">// Flag that we&#39;re now waiting for PWM end
+</span><span style="color:#75715e"></span>            waiting_for_pwm_end <span style="color:#f92672">=</span> true;
+            <span style="color:#75715e">// Clear the trigger DMA channel interrupt and return, awaiting the
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// PWM DMA channel to finish
+</span><span style="color:#75715e"></span>            dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> <span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> trigger_dma_chan;
+            <span style="color:#66d9ef">return</span>;
+        }
+    }
+
+    <span style="color:#75715e">// Either the second time into the interrupt handler (so PWM DMA channel
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// finished and fired an interrupt) or PWM DMA channel had already finished
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// the first time so we didn&#39;t wait. Either way we&#39;re not waiting for the
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// PWM DMA any more so clear the flag and disable the interrupt.
+</span><span style="color:#75715e"></span>    waiting_for_pwm_end <span style="color:#f92672">=</span> false;
+    dma_channel_set_irq0_enabled(pwm_dma_chan, false);
+
+    <span style="color:#75715e">// Start a new PWM sequence
+</span><span style="color:#75715e"></span>    begin_pwm_sequence();
+
+    <span style="color:#75715e">// Clear both interrupts (either could be set at this point).
+</span><span style="color:#75715e"></span>    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> trigger_dma_chan) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> pwm_dma_chan);
+}
+</code></pre></td></tr></table>
+</div>
+</div><br/>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// This must be added to the PWM DMA channel setup code
+</span><span style="color:#75715e"></span>channel_config_set_irq_quiet(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, true);
+</code></pre></td></tr></table>
+</div>
+</div><p>This is a more complex solution and introduces new potential bugs like the
+missed wake-up. I think the first solution is a better choice for this
+application. For another, where the polling loop may be waiting a while the
+second could be better.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>You might be wondering why bother with all this complexity for streaming a few
+values to PWM channels (plus the memory for the pre-computed PWM values)? You&rsquo;d
+be right to do so, I set out to push the DMA as much as possible to see what I
+could do, not build the most practical LED PWM animation code, I enjoyed doing
+it but likely wouldn&rsquo;t use this in a real application. For other applications
+these techniques will be more useful, e.g. the Pico can drive a video interface,
+something I have yet to try but there will be lots of data to move around with
+precise timings and you want to save CPU time for other things.</p>
+
+</div>
+
+</main>
+</body>
+</html>
