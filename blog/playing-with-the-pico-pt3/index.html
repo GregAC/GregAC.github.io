@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 3 - PWM Audio</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 3 - PWM Audio</h1>
+  <p>I decided to experiment with audio on the pico next. The pico doesn&rsquo;t directly
+give you a DAC (digital to analog converter) to produce an audio signal so you
+need extra circuitry to get one. There are of course many chips that can the job
+for you but there&rsquo;s a simple way using PWM along with a capacitor and a resistor
+or two.</p>
+<p>When driving LEDs with PWM, the inability of our eyes to see sufficiently rapid
+flickering means the fully on to fully off blurs into varying levels of
+brightness. We can do the exact same thing with audio where the PWM blurs into
+different voltage levels representing our audio signal. Directly driving a
+speaker or headphones with a PWM signal can work but I&rsquo;m going to add an RC
+(resistor capacitor) filter to give a better audio signal.</p>
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pwm_audio">github</a></em></p>
+<h2 id="building-and-testing-the-rc-filter">Building and testing the RC filter</h2>
+<p>I used the components I had to hand so choose a 68 Ω resistor and 0.1
+μF capacitor, when connected in series these form a low pass filter
+blocking frequencies above 23.4 kHz, a bit above the range of human hearing.
+This is connected between a pico pin and ground with the output taken from the
+voltage across the capacitor.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/filter-circuit-1.jpg"
+         alt="RC filter circuit"/> 
+</figure>
+
+<p>First of all I ran a program to iterate through 16 different PWM output levels,
+changing once per second going up then down. I placed a multimeter across the
+capacitor to check voltage levels were going up and down in the steps expected
+and they were.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">int</span> audio_pin_slice <span style="color:#f92672">=</span> pwm_gpio_to_slice_num(AUDIO_PIN);
+
+pwm_config config <span style="color:#f92672">=</span> pwm_get_default_config();
+pwm_config_set_clkdiv(<span style="color:#f92672">&amp;</span>config, <span style="color:#ae81ff">8.f</span>);
+pwm_init(audio_pin_slice, <span style="color:#f92672">&amp;</span>config, true);
+
+<span style="color:#66d9ef">int</span> level <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+<span style="color:#66d9ef">bool</span> up <span style="color:#f92672">=</span> true;
+
+<span style="color:#66d9ef">while</span>(<span style="color:#ae81ff">1</span>) {
+    <span style="color:#66d9ef">int</span> pwm_level <span style="color:#f92672">=</span> level <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">12</span>;
+    pwm_set_gpio_level(AUDIO_PIN, pwm_level);
+
+    <span style="color:#66d9ef">if</span> (level <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+        up <span style="color:#f92672">=</span> true;
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (level <span style="color:#f92672">==</span> <span style="color:#ae81ff">15</span>) {
+        up <span style="color:#f92672">=</span> false;
+    }
+
+    <span style="color:#66d9ef">if</span> (up) {
+        level<span style="color:#f92672">++</span>;
+    } <span style="color:#66d9ef">else</span> {
+        level<span style="color:#f92672">--</span>;
+    }
+
+    sleep_ms(<span style="color:#ae81ff">1000</span>);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Next I wanted to bring this down to a line level voltage for an audio output,
+around 1V maximum. The easy way to do this is with a potential divider. I
+initially experimented with using a divider connected directly to the pin with
+the capacitor over the lower resistor. I wasn&rsquo;t convinced this would work well,
+the step and down experiment from above didn&rsquo;t work properly. I suspect this is
+because the lower resistor is discharging the capacitor whilst the upper
+resistor is charging it and you don&rsquo;t reach the voltage level you want quickly.
+I could increase both resistances to minimise the discharge current but then the
+charge current would also be diminished. Instead I tried a separate divider
+wired across the capacitor using 2.2k and 1k resistors (see circuit and photo
+below). This looked to work with my multimeter test, voltage stepping up and
+down as expected topping out around 0.8v.</p>
+<p><em>Check out section 3.4.1 of <a href="https://datasheets.raspberrypi.org/rp2040/hardware-design-with-rp2040.pdf">Hardware design with RP2040</a> for a better PWM audio circuit, including stereo</em></p>
+<p><figure class="text-center">
+    <img src="/media/play_pico/filter-circuit-2.jpg"
+         alt="RC filter circuit with potential divider"/> 
+</figure>
+
+<figure class="text-center">
+    <img src="/media/play_pico/pwm-breadboard.jpg"
+         alt="PWM circuit on a breadboard"/> 
+</figure>
+</p>
+<p>At this point it&rsquo;d be useful to use an oscilloscope to take a look at what&rsquo;s
+going on at a more detailed level, especially when I start trying to produce
+audio waveforms, unfortunately I don&rsquo;t have one. However the Pico does have an
+onboard ADC (analog to digital converter) capable of 500 kSps (kilo samples per
+second). With my filter topping out at 23.4 kHz that should be more than enough
+samples to get decent audio waveforms. Accuracy will be nothing like a proper
+oscilloscope but it should do the trick for my purposes.</p>
+<p>To get a good trace we want accurate sample times, luckily the Pico ADC provides
+this for us with a free running mode where it samples every N cycles and writes
+samples into a FIFO queue. You can use the DMA to read these out and write into
+memory. This will give you accurate sampling at a controllable rate with very
+little CPU involvement.</p>
+<p>To get this setup we&rsquo;ll need a DMA channel configured to read from the ADC FIFO
+address and write to a memory buffer, with the DMA DREQ set to the ADC so it
+reads every time the ADC produces a new sample. Sample rate needs careful
+consideration, whilst higher is better we&rsquo;ll fill up memory quickly. For my
+initial test I&rsquo;ll use 25 kSps. Samples are 2 bytes each (12-bit resolution) so
+we&rsquo;ll need around 50 kB of buffer space to store 1 second. The sample rate is
+too low if we&rsquo;re looking at 23.4 kHz signals but I won&rsquo;t get anywhere near that
+for my initial testing and a longer total sample period may be useful.</p>
+<p>Here&rsquo;s the code to set that all up:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">adc_gpio_init(<span style="color:#ae81ff">26</span> <span style="color:#f92672">+</span> ADC_CHANNEL);
+adc_init();
+adc_select_input(ADC_CHANNEL);
+adc_fifo_setup(
+    true,    <span style="color:#75715e">// Write each completed conversion to the sample FIFO
+</span><span style="color:#75715e"></span>    true,    <span style="color:#75715e">// Enable DMA data request (DREQ)
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">1</span>,       <span style="color:#75715e">// DREQ (and IRQ) asserted when at least 1 sample present
+</span><span style="color:#75715e"></span>    true,    <span style="color:#75715e">// Set sample error bit on error
+</span><span style="color:#75715e"></span>    false,   <span style="color:#75715e">// Keep full 12 bits of each sample
+</span><span style="color:#75715e"></span>);
+
+<span style="color:#75715e">// ADC clock is a fixed 48 MHz, a setting of 1919 gives one sample every 1920
+</span><span style="color:#75715e">// clocks, resulting in 25 kSps.
+</span><span style="color:#75715e"></span>adc_set_clkdiv(<span style="color:#ae81ff">1919</span>);
+
+uint dma_adc_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+dma_channel_config dma_adc_cfg <span style="color:#f92672">=</span> dma_channel_get_default_config(dma_adc_chan);
+channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>dma_adc_cfg, DMA_SIZE_16);
+channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>dma_adc_cfg, false);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>dma_adc_cfg, true);
+channel_config_set_dreq(<span style="color:#f92672">&amp;</span>dma_adc_cfg, DREQ_ADC);
+
+<span style="color:#75715e">// Setup DMA to read from ADC and write to sample_buffer, set it going
+</span><span style="color:#75715e">// immediately
+</span><span style="color:#75715e"></span>dma_channel_configure(dma_adc_chan, <span style="color:#f92672">&amp;</span>dma_adc_cfg,
+    sample_buffer,
+    <span style="color:#f92672">&amp;</span>adc_hw<span style="color:#f92672">-&gt;</span>fifo,
+    NUM_SAMPLES,
+    true
+);
+
+<span style="color:#75715e">// DMA runs on ADC DREQ so nothing happens til we start the ADC
+</span><span style="color:#75715e"></span>adc_run(true);
+</code></pre></td></tr></table>
+</div>
+</div><p>Initially I used the same code for my multimeter test with quicker level
+changes, it would step up and down 16 levels in a bit under a second. I also
+changed the max counter value in the PWM from 65535 to 254. With the larger
+counter value you get less than 2'000 PWM cycles per second. Clearly we need
+more for PWM audio, a max count of 254 gives almost 500'000 PWM cycles per
+second along with 256 possible levels (255 full on, 0 full off and 1 - 254
+representing varying mixtures of on and off).</p>
+<p>Measuring the output of the stepping up and down test via the ADC gives a graph
+like this (I dumped the sample buffer over serial when the capture finished
+which could be logged and opened directly as a .csv).</p>
+<figure class="text-center">
+    <img src="/media/play_pico/step-plot.jpg"
+         alt="Up and down step test ADC levels"/> 
+</figure>
+
+<p>You can clearly see the steps though it looks pretty noisy, here&rsquo;s a zoom of one
+of the steps. Lots of large spikes.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/step-plot-zoom.jpg"
+         alt="Zoom of up and down step test ADC levels"/> 
+</figure>
+
+<p>I decided not to worry too much about this, filtered PWM is never going to give
+you a perfect level, the measurement via the ADC may be introducing some noise
+or artifacts plus the RC low-pass filter is meant to deal with varying voltage,
+not DC levels, we may get a nicer result with a proper audio waveform, so let&rsquo;s
+check that out next.</p>
+<h2 id="trying-an-audio-waveform">Trying an audio waveform</h2>
+<p>44.1 kHz is a common sampling rate for high quality audio, we are unlikely to
+get high quality audio out of this so let&rsquo;s go for 22 kHz to keep memory
+requirements down. We want to keep the PWM max count at 254 so there&rsquo;s only 1
+byte per sample, so we&rsquo;ll use a PWM clock divider of 22.1 to give us 22'000 PWM cycles
+per second at Pico&rsquo;s default 125 MHz clock.</p>
+<p>We need a way to feed the audio data to the PWM channel, DMA can be used. Like
+<a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/">Part 2</a> we want a continuous loop
+of some sequence, but this time we&rsquo;ve only got one PWM channel to drive. A
+single DMA channel setup to copy from the audio buffer to the PWM will do the
+trick, with an interrupt when it&rsquo;s done which will set it off again.</p>
+<p>Sadly using DMA gives us an issue with 8-bit samples. The DMA can copy 8 bits at
+a time but when writing to a PWM register, which is 32-bits, this 8-bits gets
+replicated across all 4 bytes for the write, which isn&rsquo;t what we want. To fix
+this our audio buffer will be 16-bit samples though with a max value of 255
+(if we used all 16 bits we don&rsquo;t get a high enough PWM frequency to produce
+audio). This wastes memory but will do for testing purposes.</p>
+<p>Here&rsquo;s the code:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">dma_irh</span>() {
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al3_read_addr_trig <span style="color:#f92672">=</span> audio_buffer;
+    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> pwm_dma_chan);
+}
+</code></pre></td></tr></table>
+</div>
+</div><br/>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Setup DMA channel to drive the PWM
+</span><span style="color:#75715e"></span>pwm_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+
+dma_channel_config pwm_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(pwm_dma_chan);
+<span style="color:#75715e">// Transfer 16 bits at once, increment read address to go through sample
+</span><span style="color:#75715e">// buffer, always write to the same address (PWM slice CC register).
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DMA_SIZE_16);
+channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, true);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, false);
+<span style="color:#75715e">// Transfer on PWM cycle end
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DREQ_PWM_WRAP0 <span style="color:#f92672">+</span> audio_pin_slice);
+
+<span style="color:#75715e">// Setup the channel and set it going
+</span><span style="color:#75715e"></span>dma_channel_configure(
+    pwm_dma_chan,
+    <span style="color:#f92672">&amp;</span>pwm_dma_chan_config,
+    <span style="color:#f92672">&amp;</span>pwm_hw<span style="color:#f92672">-&gt;</span>slice[audio_pin_slice].cc, <span style="color:#75715e">// Write to PWM counter compare
+</span><span style="color:#75715e"></span>    audio_buffer, <span style="color:#75715e">// Read values from audio buffer
+</span><span style="color:#75715e"></span>    AUDIO_SAMPLES,
+    true <span style="color:#75715e">// Start immediately.
+</span><span style="color:#75715e"></span>);
+
+<span style="color:#75715e">// Setup interrupt handler to fire when PWM DMA channel has gone through the
+</span><span style="color:#75715e">// whole audio buffer
+</span><span style="color:#75715e"></span>dma_channel_set_irq0_enabled(pwm_dma_chan, true);
+irq_set_exclusive_handler(DMA_IRQ_0, dma_irh);
+irq_set_enabled(DMA_IRQ_0, true);
+</code></pre></td></tr></table>
+</div>
+</div><p>For our test audio sample we&rsquo;ll use a 440 Hz tone. Running this results in the
+follow ADC capture. Not the smoothest waveform but recognisable at least. I
+tried taking out the potential divider to see if it made a difference but it
+didn&rsquo;t have a noticeable effect.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/bad-tone.jpg"
+         alt="Messy waveform of a 440 Hz tone"/> 
+</figure>
+
+<p>What could we do to improve it? Currently there&rsquo;s one audio sample per PWM
+cycle, would changing this ratio help? I decided to repeat each sample 4 times
+in the audio buffer and change the PWM clock divider to 1/4 of what it was (from
+22.1 to 5.5), things are much improved if still a bit spiky.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/better-tone.jpg"
+         alt="Improved waveform of a 440 Hz tone"/> 
+</figure>
+
+<p>Measuring one peak to peak distance is 56 samples, the DAC runs at a fixed 48
+MHz clock and was setup to sample once every 1'920 clocks. This gives a
+frequency of 446 Hz for the tone (48'000'000 / 1920 / 56), close enough to the
+intended 440 Hz, especially as 440 Hz doesn&rsquo;t fit into a whole number of ADC
+samples.</p>
+<p>Combined with the need for 16-bits per sample we&rsquo;re now using 8x the memory for
+the audio buffer compared to the memory required for the raw audio data. So for
+now we&rsquo;ll forget about using DMA and do everything with the CPU and a PWM
+interrupt. When the PWM cycle is complete the interrupt fires, the CPU
+determines the next audio sample and writes it out to the PWM slice register.
+The interrupt handler can do the 8-bit -&gt; 32-bit expansion required as well as
+the sample repetition without wasting memory.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">pwm_irh</span>() {
+    pwm_clear_irq(pwm_gpio_to_slice_num(AUDIO_PIN));
+    pwm_set_gpio_level(AUDIO_PIN, audio_buffer[cur_sample <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">2</span>]);
+
+    <span style="color:#66d9ef">if</span> (cur_sample <span style="color:#f92672">&lt;</span> (AUDIO_SAMPLES <span style="color:#f92672">*</span> <span style="color:#ae81ff">4</span>) <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>) {
+        <span style="color:#f92672">++</span>cur_sample;
+    } <span style="color:#66d9ef">else</span> {
+        cur_sample <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>As I still had some LEDs hooked up from
+<a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/">Part 2</a> and all audio samples
+were handled in software I added some code to the PWM interrupt handler to make
+the LEDs a primitive VU meter.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">uint8_t sample <span style="color:#f92672">=</span> audio_buffer[cur_sample <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">2</span>];
+
+<span style="color:#66d9ef">if</span> (sample <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">128</span>) {
+    gpio_put(led_pins[<span style="color:#ae81ff">0</span>], true);
+} <span style="color:#66d9ef">else</span> {
+    gpio_put(led_pins[<span style="color:#ae81ff">0</span>], false);
+}
+
+<span style="color:#66d9ef">if</span> (sample <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">137</span>) {
+    gpio_put(led_pins[<span style="color:#ae81ff">1</span>], true);
+} <span style="color:#66d9ef">else</span> {
+    gpio_put(led_pins[<span style="color:#ae81ff">1</span>], false);
+}
+
+<span style="color:#66d9ef">if</span> (sample <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">147</span>) {
+    gpio_put(led_pins[<span style="color:#ae81ff">2</span>], true);
+} <span style="color:#66d9ef">else</span> {
+    gpio_put(led_pins[<span style="color:#ae81ff">2</span>], false);
+}
+
+<span style="color:#66d9ef">if</span> (sample <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">157</span>) {
+    gpio_put(led_pins[<span style="color:#ae81ff">3</span>], true);
+} <span style="color:#66d9ef">else</span> {
+    gpio_put(led_pins[<span style="color:#ae81ff">3</span>], false);
+}
+
+<span style="color:#66d9ef">if</span> (sample <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">168</span>) {
+    gpio_put(led_pins[<span style="color:#ae81ff">4</span>], true);
+} <span style="color:#66d9ef">else</span> {
+    gpio_put(led_pins[<span style="color:#ae81ff">4</span>], false);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Finally I didn&rsquo;t have a audio jack to hand I could wire into my circuity. I did
+have a jack to jack audio cable though, so I just wrapped some wire tightly
+around one end, which plugged into the filtered PWM output and ground. The other
+end connected to a small powered speaker that had a line-in input.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/audio-jack.jpg"
+         alt="Wires wrapped round an audio jack"/> 
+</figure>
+
+<p>Here&rsquo;s a video of the final result playing a short music clip <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>, you can see
+the external microphone I used to record the audio. I was surprised at the
+quality, you can just about hear some background hiss and it may not work so
+well with other audio but for PWM driving a capacitor and a few resistors via
+breadboard and signal wire it does a very good job!</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/pwm-audio.mp4" type="video/mp4">
+</video>
+<p>I was interested to see how much difference repeating the samples made. I tried
+again with the original PWM clock divider giving us one PWM cycle per audio
+sample at 22 KHz and it still worked well. I think I could discern a difference
+(in person, it wasn&rsquo;t noticeable on a recorded video) but it wasn&rsquo;t a major dip
+in quality. Given the 440 Hz tone definitely benefited from the sample repeat I
+think it&rsquo;s worth keeping, 4x should be sufficient. I did try 8x as well but
+couldn&rsquo;t really hear a difference between it and 4x.</p>
+<h2 id="using-dma-to-stream-audio">Using DMA to stream audio</h2>
+<p>As discussed above whilst we can use DMA to stream our audio data directly,
+there&rsquo;s a couple of issues:</p>
+<ol>
+<li>Reads and writes have to be 16-bit, so we have to use 16-bit per sample,
+padding out our 8-bit samples with zeros</li>
+<li>To repeat samples we just repeat them in the buffer</li>
+</ol>
+<p>This makes the buffer we&rsquo;d use for DMA 8x the size of the raw audio (4x sample
+repeat and 2x 8 - 16 bit). Can we do better? Of course!</p>
+<p>As in <a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/">Part 2</a> if we get creative with multiple DMA channels using DREQs,
+chaining and triggering we can produce some complex behaviours. By using three
+channels we can stream directly:</p>
+<ol>
+<li>
+<p>The stream channel, it copies 1 byte at a time from the audio buffer to a
+fixed location. It&rsquo;s configured to transfer one byte and stop.</p>
+</li>
+<li>
+<p>The PWM channel, it copies 4 bytes at a time from the fixed location to the
+PWM slice on a PWM DREQ and it&rsquo;s configured to transfer 4 times. It&rsquo;s chained
+to the stream channel so when it&rsquo;s done the next audio sample is copied to
+the fixed location.</p>
+</li>
+<li>
+<p>The trigger channel, it keeps everything running. It triggers the PWM channel
+by writing to one of its trigger registers. It&rsquo;s also connected to the PWM
+DREQ and configured to transfer the total number of samples multiplied by 4.</p>
+</li>
+</ol>
+<p>The interaction between the PWM channel and the stream channel does an 8 bit to
+32 bit expansion for us. We need to ensure the fixed location is initialised
+with 0, the stream channel copies 1 byte in and the PWM channel 4 bytes out, one
+is our sample the other will be 0. The PWM channel does the sample repetition by
+copying the same sample value to the PWM 4 times.</p>
+<p>The trigger channel kicks the PWM channel into action but will do further
+transfers whilst the PWM channel is doing the sample repetitions, these are
+simply ignored as the PWM channel is active. If we had a DREQ that fires
+1 every 4 PWM cycles we&rsquo;d use that, but we don&rsquo;t <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup>.</p>
+<p>Here&rsquo;s the code that sets it all up, there&rsquo;s an interrupt setup to fire when the
+trigger channel is done which resets the cycle and starts it off again.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">45
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">46
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">47
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">48
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">49
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">50
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">51
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">52
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">53
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">54
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">55
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">56
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">57
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">58
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">59
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">60
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">61
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">62
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">63
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">64
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">65
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">66
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">67
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">68
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">69
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">70
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">71
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">72
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">73
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">74
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">75
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">76
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">77
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Setup PWM DMA channel
+</span><span style="color:#75715e"></span>dma_channel_config pwm_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(pwm_dma_chan);
+<span style="color:#75715e">// Transfer 32-bits at a time
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Read from a fixed location, always writes to the same address
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, false);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, false);
+<span style="color:#75715e">// Chain to sample DMA channel when done
+</span><span style="color:#75715e"></span>channel_config_set_chain_to(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, sample_dma_chan);
+<span style="color:#75715e">// Transfer on PWM cycle end
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>pwm_dma_chan_config, DREQ_PWM_WRAP0 <span style="color:#f92672">+</span> audio_pin_slice);
+
+dma_channel_configure(
+    pwm_dma_chan,
+    <span style="color:#f92672">&amp;</span>pwm_dma_chan_config,
+    <span style="color:#75715e">// Write to PWM slice CC register
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>pwm_hw<span style="color:#f92672">-&gt;</span>slice[audio_pin_slice].cc,
+    <span style="color:#75715e">// Read from single_sample
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>single_sample,
+    <span style="color:#75715e">// Transfer once per desired sample repetition
+</span><span style="color:#75715e"></span>    REPETITION_RATE,
+    <span style="color:#75715e">// Don&#39;t start yet
+</span><span style="color:#75715e"></span>    false
+);
+
+<span style="color:#75715e">// Setup trigger DMA channel
+</span><span style="color:#75715e"></span>dma_channel_config trigger_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(trigger_dma_chan);
+<span style="color:#75715e">// Transfer 32-bits at a time
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Always read and write from and to the same address
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, false);
+channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, false);
+<span style="color:#75715e">// Transfer on PWM cycle end
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>trigger_dma_chan_config, DREQ_PWM_WRAP0 <span style="color:#f92672">+</span> audio_pin_slice);
+
+dma_channel_configure(
+    trigger_dma_chan,
+    <span style="color:#f92672">&amp;</span>trigger_dma_chan_config,
+    <span style="color:#75715e">// Write to PWM DMA channel read address trigger
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>dma_hw<span style="color:#f92672">-&gt;</span>ch[pwm_dma_chan].al3_read_addr_trig,
+    <span style="color:#75715e">// Read from location containing the address of single_sample
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>single_sample_ptr,
+    <span style="color:#75715e">// Need to trigger once for each audio sample but as the PWM DREQ is
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// used need to multiply by repetition rate
+</span><span style="color:#75715e"></span>    REPETITION_RATE <span style="color:#f92672">*</span> AUDIO_SAMPLES,
+    false
+);
+
+<span style="color:#75715e">// Fire interrupt when trigger DMA channel is done
+</span><span style="color:#75715e"></span>dma_channel_set_irq0_enabled(trigger_dma_chan, true);
+irq_set_exclusive_handler(DMA_IRQ_0, dma_irh);
+irq_set_enabled(DMA_IRQ_0, true);
+
+<span style="color:#75715e">// Setup sample DMA channel
+</span><span style="color:#75715e"></span>dma_channel_config sample_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(sample_dma_chan);
+<span style="color:#75715e">// Transfer 8-bits at a time
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>sample_dma_chan_config, DMA_SIZE_8);
+<span style="color:#75715e">// Increment read address to go through audio buffer
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>sample_dma_chan_config, true);
+<span style="color:#75715e">// Always write to the same address
+</span><span style="color:#75715e"></span>channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>sample_dma_chan_config, false);
+
+dma_channel_configure(
+    sample_dma_chan,
+    <span style="color:#f92672">&amp;</span>sample_dma_chan_config,
+    <span style="color:#75715e">// Write to single_sample
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">&amp;</span>single_sample,
+    <span style="color:#75715e">// Read from audio buffer
+</span><span style="color:#75715e"></span>    audio_buffer,
+    <span style="color:#75715e">// Only do one transfer (once per PWM DMA completion due to chaining)
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">1</span>,
+    <span style="color:#75715e">// Don&#39;t start yet
+</span><span style="color:#75715e"></span>    false
+);
+
+<span style="color:#75715e">// Kick things off with the trigger DMA channel
+</span><span style="color:#75715e"></span>dma_channel_start(trigger_dma_chan);
+</code></pre></td></tr></table>
+</div>
+</div><br/>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">dma_irh</span>() {
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[sample_dma_chan].al1_read_addr <span style="color:#f92672">=</span> audio_buffer;
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[trigger_dma_chan].al3_read_addr_trig <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>single_sample_ptr;
+
+    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> trigger_dma_chan);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We could also look at using PIO here, something to look at another time.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>Clip taken from audio sample &lsquo;Angus Lejeune Theme&rsquo; by maxcruger at <a href="https://freesound.org/people/maxcruger/sounds/556352/">freesound</a> licensed under <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a> <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>We do have things called pacing timers, which will cause a DMA transfer
+every N cycles, potentially they could be used instead of the PWM DREQ here so
+the trigger channel would only transfer once per repetition cycle. There may
+be issues with making it all sync up so I went for the DREQ method for
+simplicity. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+</div>
+
+</main>
+</body>
+</html>

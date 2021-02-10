@@ -6,7 +6,17 @@
     <description>Recent content in Blog on Greg Chadwick</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-uk</language>
-    <lastBuildDate>Sun, 31 Jan 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sat, 06 Feb 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Playing with the Pico Part 3 - PWM Audio</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt3/</link>
+      <pubDate>Sat, 06 Feb 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt3/</guid>
+      <description>I decided to experiment with audio on the pico next. The pico doesn&amp;rsquo;t directly give you a DAC (digital to analog converter) to produce an audio signal so you need extra circuitry to get one. There are of course many chips that can the job for you but there&amp;rsquo;s a simple way using PWM along with a capacitor and a resistor or two.
+When driving LEDs with PWM, the inability of our eyes to see sufficiently rapid flickering means the fully on to fully off blurs into varying levels of brightness.</description>
+    </item>
+    
     <item>
       <title>Playing with the Pico Part 2 - Driving PWM with DMA</title>
       <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt2/</link>
