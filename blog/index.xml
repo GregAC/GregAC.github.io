@@ -6,7 +6,16 @@
     <description>Recent content in Blog on Greg Chadwick</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-uk</language>
-    <lastBuildDate>Sat, 06 Feb 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sat, 27 Feb 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Playing with the Pico Part 4 - Getting Acquainted with PIO</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt4/</link>
+      <pubDate>Sat, 27 Feb 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt4/</guid>
+      <description>I wanted to learn more about the RP2040&amp;rsquo;s PIO (programmable input/output) functionality. The PIO is a unique feature of the RP2040 which gives you fast precise control of the GPIO pins with programmable state machines. On other microcontrollers where you need to implement an interface (such as I2C or SPI) where hardware support isn&amp;rsquo;t available or you want more interfaces than the hardware provides you need to &amp;lsquo;bitbang&amp;rsquo;. Writing a program that manually toggles and reads pins, sometimes requiring careful programming to time things correctly.</description>
+    </item>
+    
     <item>
       <title>Playing with the Pico Part 3 - PWM Audio</title>
       <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt3/</link>

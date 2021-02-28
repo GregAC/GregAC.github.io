@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 4 - Getting Acquainted with PIO</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 4 - Getting Acquainted with PIO</h1>
+  <p>I wanted to learn more about the RP2040&rsquo;s PIO (programmable input/output)
+functionality. The PIO is a unique feature of the RP2040 which gives you fast
+precise control of the GPIO pins with programmable state machines. On other
+microcontrollers where you need to implement an interface (such as I2C or SPI)
+where hardware support isn&rsquo;t available or you want more interfaces than the
+hardware provides you need to &lsquo;bitbang&rsquo;. Writing a program that manually toggles
+and reads pins, sometimes requiring careful programming to time things
+correctly. PIO can do this instead freeing the CPU cores to do other things.</p>
+<p>PIO is very powerful once you get to grips with it. One thing it can do is
+generate video signals which I decided to try implementing myself.
+<a href="https://github.com/Wren6991/picodvi">One impressive example runs dual DVI displays</a>
+directly off an RP2040 with a suitable PCB. I was aiming for something simpler, VGA.
+Full code to produce VGA is available in the
+<a href="https://github.com/raspberrypi/pico-extras">pico-extras</a> repository in the
+<a href="https://github.com/raspberrypi/pico-extras/tree/master/src/common/pico_scanvideo">pico_scanvideo</a>
+library but I was interested in doing it myself from scratch (though I did take
+some ideas from scanvideo).</p>
+<p>I used the <a href="https://datasheets.raspberrypi.org/pico/raspberry-pi-pico-c-sdk.pdf">C/C++ SDK
+Documentation</a>
+and the <a href="https://datasheets.raspberrypi.org/rp2040/rp2040-datasheet.pdf">RP2040
+datasheet</a> to
+learn about PIO. I&rsquo;d recommend reading the SDK PIO guide first for a good
+introduction, the datasheet can then fill in the details. I&rsquo;ll give a brief
+overview here.</p>
+<h2 id="pio-introduction">PIO Introduction</h2>
+<p>There are two PIO blocks in the RP2040, each consists of 4 state machines (SMs)
+and a 32 word instruction memory. Each state machine (SM) has four registers, X
+&amp; Y, and the input and output shift registers (ISR and OSR) which are all
+32-bits in size. There are two FIFOs one for incoming data, the other for
+outgoing. The SM machine can control all 30 GPIOs, setting pin direction and
+output or reading input.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/pio-diagram.jpg"
+         alt="A diagram of PIO state machines"/> 
+</figure>
+
+<p>Instructions are 16-bit and there are 9 types:</p>
+<ul>
+<li><strong>OUT</strong>- shift bits from the OSR into a destination, such as pin outputs or the X
+or Y scratch registers.</li>
+<li><strong>IN</strong> - The opposite of OUT, shifting from sources such as pin inputs or the X
+or Y scratch registers into the ISR.</li>
+<li><strong>PULL</strong> - pops the front element of the output FIFO into the OSR. Waits if the
+output FIFO is empty.</li>
+<li><strong>PUSH</strong> - pushes the contents of the ISR into the input FIFO and clears the ISR.
+Waits if the input FIFO is full.</li>
+<li><strong>MOV</strong> - Moves from a source to a destination. Can use registers and pins as
+both a source and destination as well as a couple of places with special
+functionality.</li>
+<li><strong>JMP</strong> - Branches to a different instruction, can be conditional on a few
+conditions (such as X or Y zero or not-zero) and decrement X or Y.</li>
+<li><strong>IRQ</strong> - Raises an interrupt (which can interrupt one of the cores or be used to
+synchronize SMs).</li>
+<li><strong>WAIT</strong> - Can wait for various things like a pin changing state or an interrupt
+occurring.</li>
+<li><strong>SET</strong> - Writes an immediate value to X, Y or the pins</li>
+</ul>
+<p>Each instruction can have an optional delay measured in cycles which helps when
+you need precise timing and/or synchronization. There&rsquo;s also something called
+&lsquo;sideset&rsquo;, this allows any instruction to additionally set pins in combination
+with whatever the instruction does. This is useful for control signals such as
+clocks and enables, the sideset deals with the control leaving the OUT, MOV or
+SET to just deal with data.</p>
+<p>Here&rsquo;s a simple example, it&rsquo;s a PIO program that reads a byte from the output
+FIFO and outputs a bit a time (bits B0 - B7, LSB first)  on a serial interface,
+generating a clock to go along with it, the data changes on the negative edge of
+the clock.  It uses OUT to control the data pin and side set to control the
+clock pin.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/pio-serial-example.jpg"
+         alt="Timing diagram of a basic serial protocol, data bit changes on negative clock edge"/> 
+</figure>
+
+<pre><code>.program serial
+.side_set 1 ; Tell the assembler we have one sideset pin
+
+  pull     side 0 ; Read data from the output FIFO to the OSR, SM waits if there's none available
+  set x, 7 side 0 ; Set up X as a bit counter. The PIO will loop outputting a bit each
+                  ; time until the counter reaches 0
+inner_loop:
+  out pins, 1 side 0         ; Output one bit of the data shifting it from the OSR to the pins
+  jmp x--, inner_loop side 1 ; Repeat the inner loop if X isn't 0 and decrement X (after checking
+                             ; for zero).
+  set pins, 0 side 0 ; Bring data low line at end of byte
+.wrap ; Loop execution back to the beginning
+</code></pre><p>The <code>side 0</code> and <code>side 1</code> controls the clock. Outside of the inner loop it
+sidesets to 0, keeping the clock low. In the inner loop it toggles between 0 and
+1 giving us positive and negative clock edges as the data shifts out bit by bit.</p>
+<p>Like other hardware peripherals PIO provides a DMA DREQ. This means we can
+instruct the DMA to stream data to the PIO at the rate it&rsquo;s being consumed. This
+allows what would otherwise be long and/or complex bit bang sequences to be
+performed entirely without CPU involvement.</p>
+<p>There&rsquo;s plenty more functionality I don&rsquo;t describe above, read the documentation
+to find out more.</p>
+<h2 id="first-steps-with-the-pio">First steps with the PIO</h2>
+<p>I started by playing with the <a href="https://github.com/raspberrypi/pico-examples/tree/master/pio/pio_blink">blink
+example</a>
+just to check I&rsquo;d got the basics correct. Blink reads a number from the output
+FIFO which it uses as a delay. It turns a pin on for that number of cycles then
+turns it off again for the same number of cycles. Here&rsquo;s the PIO code:</p>
+<pre><code>.program blink
+    pull block
+    out y, 32
+.wrap_target
+    mov x, y
+    set pins, 1   ; Turn LED on
+lp1:
+    jmp x-- lp1   ; Delay for (x + 1) cycles, x is a 32 bit number
+    mov x, y
+    set pins, 0   ; Turn LED off
+lp2:
+    jmp x-- lp2   ; Delay for the same number of cycles again
+.wrap             ; Blink forever!
+</code></pre><p>I tweaked this so it would keep reading from the PIO TX FIFO to get new blink
+counts every time and fed this with a DMA channel.</p>
+<pre><code>.program blink
+.wrap_target
+    pull block
+    out y, 32
+    mov x, y
+    set pins, 1   ; Turn LED on
+lp1:
+    jmp x-- lp1   ; Delay for (x + 1) cycles, x is a 32 bit number
+    mov x, y
+    set pins, 0   ; Turn LED off
+lp2:
+    jmp x-- lp2   ; Delay for the same number of cycles again
+.wrap             ; Blink forever!
+</code></pre><p>In doing so I found it&rsquo;s very important to start a DMA channel that transfers to
+a PIO FIFO after the relevant state machine has been initialised and not before.
+If you do it before the DMA never seems to transfer anything and the PIO hangs
+forever waiting for data.</p>
+<p>Next I started putting together what I needed to generate a VGA signal.  I
+wanted a PIO program that would toggle two bits with timings supplied via the
+FIFO (I&rsquo;ll explain the point of this in the next blog where I go over VGA
+signalling). I wrote the following PIO program which pulls a 32-bit word from
+the FIFO, uses the lower 2 bits to set two pins then the upper 30 bits for a
+delay value.</p>
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pio_test">github</a></em></p>
+<pre><code>.program pin_ctrl
+    pull block  ; Grab next command word
+    out pins, 2 ; Bottom 2 bits are next pin setting
+    out x, 30   ; Other 30 bits give a delay
+wait_loop:
+    jmp x--, wait_loop ; Delay for (x + 1) cycles
+.wrap
+</code></pre><p>Here&rsquo;s the data we&rsquo;re feeding the PIO:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">uint32_t timing_buffer[<span style="color:#ae81ff">4</span>]  <span style="color:#f92672">=</span> {
+    (<span style="color:#ae81ff">4</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0x1</span>, <span style="color:#75715e">// Set pin 0, delay 4
+</span><span style="color:#75715e"></span>    (<span style="color:#ae81ff">3</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0x2</span>, <span style="color:#75715e">// Set pin 1, delay 3
+</span><span style="color:#75715e"></span>    (<span style="color:#ae81ff">8</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0x3</span>, <span style="color:#75715e">// Set both bins, delay 8
+</span><span style="color:#75715e"></span>    (<span style="color:#ae81ff">5</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0x0</span>  <span style="color:#75715e">// Set neither pin, delay 5
+</span><span style="color:#75715e"></span>};
+</code></pre></td></tr></table>
+</div>
+</div><p>The pico-examples repository contains a &lsquo;logic analyser&rsquo; which just reads pin
+state and pushes it to a FIFO which DMA streams into a capture buffer. This
+gives you a buffer with regular samples of whichever in pins you configure for
+the SM the logic analyser is running on. Combined with a wait that holds the
+analyser SM until a particular pin becomes true or false as a trigger you have a
+very primitive logic analyser. I connected this up to my example, with one
+modification, I had it dump the capture buffer in a .csv format suitable for
+loading into <a href="https://sigrok.org/wiki/PulseView">PulseView</a>, an open source
+logic analyzer software package.</p>
+<p>Here&rsquo;s the pattern seen by the logic analyzer:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/pio-logic-zoom.jpg"
+         alt="Logic analyzer output for pin_ctrl PIO program"/> 
+</figure>
+
+<p>The two bits were behaving as expected, the highlighted section is the first
+line from the <code>timing_buffer</code>. The 0x1 outputs 1 on the first pin and 0 on the
+second pin and there is a delay of 4. There are 4 instructions in the loop
+and each instruction takes 1 cycle so there is a minimum of 4 cycles per loop
+giving a total of 8 cycles which is the time our trace shows the 0x1 setting
+being held for. Each step of the pattern has the expected timings and it all
+loops nicely.</p>
+<h2 id="running-pio-sms-without-stalling">Running PIO SMs without stalling</h2>
+<p>The one thing to beware of is the speed of the PIO. It will take 40 cycles for
+it to go through the entire timing buffer (4 + 3 + 8 + 5 delays + 4 * 4 for the
+fixed overhead). We&rsquo;ll need to be handling a DMA interrupt starting a new
+transfer once every 40 cycles on average to keep things going and avoid stalling
+the SM. Probably more than we can manage (plus the CPU will spend all its time
+in DMA interrupts). We can get around this using a ring buffer. The DMA can be
+set to wrap the read address on power of two sizes. The timing buffer is 16
+bytes so if we set the DMA to wrap and give it a multiple of 4 transfers to do
+it&rsquo;ll feed the PIO with the timing buffer multiple times before a interrupt
+needs to restart things.  Here&rsquo;s the code that performs the DMA setup:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Allocate a DMA channel to feed the pin_ctrl SM its command words
+</span><span style="color:#75715e"></span>pio_dma_chan <span style="color:#f92672">=</span> dma_claim_unused_channel(true);
+
+dma_channel_config pio_dma_chan_config <span style="color:#f92672">=</span> dma_channel_get_default_config(pio_dma_chan);
+<span style="color:#75715e">// Transfer 32 bits each time
+</span><span style="color:#75715e"></span>channel_config_set_transfer_data_size(<span style="color:#f92672">&amp;</span>pio_dma_chan_config, DMA_SIZE_32);
+<span style="color:#75715e">// Increment read address (a different command word from `timing_buffer`
+</span><span style="color:#75715e">// each time)
+</span><span style="color:#75715e"></span>channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>pio_dma_chan_config, true);
+<span style="color:#75715e">// Write to the same address (the PIO SM TX FIFO)
+</span><span style="color:#75715e"></span>channel_config_set_write_increment(<span style="color:#f92672">&amp;</span>pio_dma_chan_config, false);
+<span style="color:#75715e">// Set read address to wrap on a 16-byte boundary
+</span><span style="color:#75715e"></span>channel_config_set_ring(<span style="color:#f92672">&amp;</span>pio_dma_chan_config, false, <span style="color:#ae81ff">4</span>);
+<span style="color:#75715e">// Transfer when PIO SM TX FIFO has space
+</span><span style="color:#75715e"></span>channel_config_set_dreq(<span style="color:#f92672">&amp;</span>pio_dma_chan_config, pio_get_dreq(pio, sm, true));
+
+<span style="color:#75715e">// Setup the channel and set it going
+</span><span style="color:#75715e"></span>dma_channel_configure(
+    pio_dma_chan,
+    <span style="color:#f92672">&amp;</span>pio_dma_chan_config,
+    <span style="color:#f92672">&amp;</span>pio<span style="color:#f92672">-&gt;</span>txf[sm], <span style="color:#75715e">// Write to PIO TX FIFO
+</span><span style="color:#75715e"></span>    timing_buffer, <span style="color:#75715e">// Read values from timing buffer
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">16</span>, <span style="color:#75715e">// `timing_buffer` has 4 entries, so 16 will go through it 4 times
+</span><span style="color:#75715e"></span>    false <span style="color:#75715e">// don&#39;t start yet
+</span><span style="color:#75715e"></span>);
+</code></pre></td></tr></table>
+</div>
+</div><p>There&rsquo;s still a problem though, let&rsquo;s zoom out in the
+capture above (where the ring buffer was used):</p>
+<figure class="text-center">
+    <img src="/media/play_pico/pio-logic-large-gaps.jpg"
+         alt="Logic analyzer output for pin_ctrl PIO program zoomed out with a large gap between pattern repeats"/> 
+</figure>
+
+<p>We get a few repeats of the pattern and a long gap where the SM is stalled. The
+long gap is caused by the flash cache on the pico. The interrupt handler code is
+off chip initially so there&rsquo;s a long delay when it&rsquo;s first fetched and executed
+leading to a long pause in our PIO output whilst it waits for the DMA to start
+again. We can try and fix this by using <code>__not_in_flash_func</code> with our interrupt
+handler so it gets placed into SRAM.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">__not_in_flash_func</span>(dma_irh)() {
+    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> pio_dma_chan);
+    dma_hw<span style="color:#f92672">-&gt;</span>ch[pio_dma_chan].al3_read_addr_trig <span style="color:#f92672">=</span> timing_buffer;
+}
+</code></pre></td></tr></table>
+</div>
+</div><figure class="text-center">
+    <img src="/media/play_pico/pio-logic-small-gaps.jpg"
+         alt="Logic analyzer output for pin_ctrl PIO program zoomed out with a small gap between pattern repeats"/> 
+</figure>
+
+<p>Looking better but there&rsquo;s still the occasional gap that&rsquo;s longer than it
+should be. Ultimately what we&rsquo;re trying to do is here is quite demanding, once
+the DMA has finished there&rsquo;s not much time til the PIO SM has drained its TX
+FIFO and the DMA has to have started again. The TX FIFO is only 4 entries but if
+we&rsquo;re not using the RX FIFO we can double the size of the TX FIFO to 8. By using
+that doubling here we can remove the gaps entirely</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Join FIFOs together to get an 8 entry TX FIFO
+</span><span style="color:#75715e"></span>sm_config_set_fifo_join(<span style="color:#f92672">&amp;</span>c, PIO_FIFO_JOIN_TX);
+</code></pre></td></tr></table>
+</div>
+</div><figure class="text-center">
+    <img src="/media/play_pico/pio-logic-final.jpg"
+         alt="Logic analyzer output for pin_ctrl PIO program zoomed out with no gap between pattern repeats"/> 
+</figure>
+
+<p>So how does this relate to video signals? I&rsquo;ll go into that in the next blog.</p>
+
+</div>
+
+</main>
+</body>
+</html>
