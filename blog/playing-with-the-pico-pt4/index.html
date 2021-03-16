@@ -174,7 +174,7 @@ FIFO (I&rsquo;ll explain the point of this in the next blog where I go over VGA
 signalling). I wrote the following PIO program which pulls a 32-bit word from
 the FIFO, uses the lower 2 bits to set two pins then the upper 30 bits for a
 delay value.</p>
-<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pio_test">github</a></em></p>
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/main/pio_test">github</a></em></p>
 <pre><code>.program pin_ctrl
     pull block  ; Grab next command word
     out pins, 2 ; Bottom 2 bits are next pin setting
