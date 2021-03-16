@@ -6,7 +6,17 @@
     <description>Recent content in Blog on Greg Chadwick</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-uk</language>
-    <lastBuildDate>Sat, 27 Feb 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sun, 14 Mar 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Playing with the Pico Part 5 - Producing VGA Video</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt5/</link>
+      <pubDate>Sun, 14 Mar 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt5/</guid>
+      <description>Lets talk about VGA signalling. VGA uses 5 lines, 3 are analog signals and represent red, green and blue, the higher the voltage the brighter the colour. The other 2 are sync and are digital signals, they tell the monitor how the colour signals relate to the pixels.
+One of the sync signals is the horizontal sync (HSYNC), the other is the vertical (VSYNC). They both work in very similar ways, let&amp;rsquo;s take a look at the horizontal sync first.</description>
+    </item>
+    
     <item>
       <title>Playing with the Pico Part 4 - Getting Acquainted with PIO</title>
       <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt4/</link>

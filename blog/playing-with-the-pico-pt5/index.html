@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 5 - Producing VGA Video</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 5 - Producing VGA Video</h1>
+  <p>Lets talk about VGA signalling. VGA uses 5 lines, 3 are analog signals and
+represent red, green and blue, the higher the voltage the brighter the colour.
+The other 2 are sync and are digital signals, they tell the monitor how the
+colour signals relate to the pixels.</p>
+<p>One of the sync signals is the horizontal sync (HSYNC), the other is the
+vertical (VSYNC). They both work in very similar ways, let&rsquo;s take a look at the
+horizontal sync first.  Below is a timing diagram that illustrates a single
+horizontal line of video, known as a scanline.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/hsync-timing.jpg"
+         alt="Timing diagram showing hsync pulse and visible line"/> 
+</figure>
+
+<p>The HSYNC is just a pulse between scanlines. It is ordinarily held high and goes
+low for the sync pulse. The critical thing is the timing, driven by the pixel
+clock. The pixel clock measures how quickly the RGB signals change, each tick of
+the pixel clock means a new RGB value and a new pixel. The timing of the sync
+pulse is measured in terms of the pixel clock. Along with the sync pulse we have
+the back porch and the front porch, no pixels are output during all three. This
+is known as the horizontal blanking period. On CRT monitors this was required to
+allow the beam time to get back to the left side of the screen.  I&rsquo;ve marked the
+front and back porch and sync pulse along with the visible line on the diagram
+with letters. Here&rsquo;s the length of each in pixel clocks at 640x480:</p>
+<ul>
+<li>A - front porch - 16 pixel clocks</li>
+<li>B - sync pulse - 96 pixel clocks</li>
+<li>C - back porch - 48 pixel clocks</li>
+<li>D - visible line - 640 pixel clocks</li>
+</ul>
+<p>The VSYNC does exactly the same thing, only the timing is done in scanlines.
+Again there are front and back porches around the sync pulse and a visible
+region. This means again there&rsquo;s a point where nothing is displayed known as the
+vertical blanking interval. This is used by CRT monitors to give time for the
+beam to go back to the top of the screen. Here&rsquo;s a timing diagram showing
+horizontal and vertical sync.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/vsync-timing.jpg"
+         alt="Timing diagram showing vsync pulse and visible frame"/> 
+</figure>
+
+<ul>
+<li>A - front porch - 10 scan lines</li>
+<li>B - sync pulse - 2 scan lines</li>
+<li>C - back porch - 33 scan lines</li>
+<li>D - visible lines - 480 scan lines</li>
+</ul>
+<p>The PIO program described in the
+<a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt4/">last blog</a> will be the basis of a
+PIO program to produce the horizontal and vertical sync signals. For each line
+(both those in the visible portion and the blanking portion) we&rsquo;ll have 4
+command words, one for each of the sync pulse, back and front porch and the
+visible portion. The delay part of the command word gives the delay and the pin
+settings control the vertical and horizontal sync outputs.</p>
+<p>The program requires one extra feature, a way to signal when we are at various
+parts of the line or frame. In particular we want something to sync up another
+PIO program, one that will output our pixel data, with the beginning of a
+visible line.</p>
+<p>We&rsquo;ll use a special destination of the <code>out</code> instruction to do this. <code>out</code> can
+write to an <code>exec</code> destination. What this does is shift data from the OSR and
+immediately execute it as a PIO instruction. This will be used to add a PIO
+instruction to the command word. The sync PIO program will sit in a loop,
+pulling a 32-bit command word from the TX FIFO doing three things:</p>
+<ol>
+<li>Set HSYNC and VSYNC based on the bits 0 and 1</li>
+<li>Execute the PIO instruction from the command (bits 17 - 2)</li>
+<li>Enter a delay loop, delaying the number of cycles from the command (bits 31 -
+18)</li>
+</ol>
+<p>This is just my previous test program with the addition of the instruction
+execution at 2. The instruction will either be <code>nop</code> doing nothing or <code>irq</code>
+raising an interrupt that will signal the beginning of a line. To produce a full
+frame of sync we just need to send the correct command words to the sync SM.
+Here&rsquo;s the PIO code:</p>
+<pre><code>.program sync_out
+    pull ; get next command word
+    out pins, 2 ; first 2 bits are hsync/vsync
+    out x, 14 ; next 14 bits are delay
+    out exec, 16 ; final 16 bits are instruction to execute
+wait_loop:
+    jmp x--, wait_loop ; wait for the given delay value
+.wrap
+</code></pre><p>To go along with this we need something to produce the pixel data. We&rsquo;ll use a
+separate SM I&rsquo;ll call the line SM that just pulls pixel data out of a FIFO and
+writes it out to the pins. We&rsquo;ll use a 15-bit format of 5 bits red, 5 bits green
+and 5 bits blue with an external digital to analog converter (DAC) to produce the
+varying voltages for the VGA signal (16 bit with an extra bit for green is more
+usual but I only implemented 5 bits per channel on my DAC).</p>
+<p>The line SM will sync itself up with the sync SM using the <code>wait</code> instruction to
+wait for a start of line IRQ from the appropriate sync SM command word. When the
+wait is done it will stream the pixel data from the FIFO out to the pins.
+Initially I&rsquo;m going to use the logic analyzer setup from the last blog to test
+things (no monitor connected to the pins) so to keep it simple we&rsquo;ll have 10
+pixels per line and only 6 bits per pixel (giving 1 byte per logic analyzer
+sample, 6 bits of pixel and 2 bits of sync). Here&rsquo;s the line PIO program:</p>
+<pre><code>.program line_out
+    wait 1 irq  4 ; wait til triggered by sync SM
+    set x, 9 ; Setup x as pixel counter (10 pixels in a line)
+line_loop:
+    pull ; get next pixel
+    out pins, 6 [7] ; output to the pins and delay (to give 10 cycles per loop)
+    jmp x--, line_loop ; output next pixel if we have pixels left
+end:
+    set x, 0 ; output a 0 pixel after the visible line
+    mov pins, x
+.wrap
+</code></pre><p>The pixel data needs to change at the pixel clock rate. For 640x480 that is
+25.175 MHz.  You can get away with not being too precise so the pixel clock will
+be 25 MHz, a nice multiple away from the Pico&rsquo;s default 125 MHz (one pixel per 5
+cycles). I&rsquo;m actually going to produce graphics at 320x240 just to minimise the
+number of pixels to produce per frame but do this by outputting the same pixel
+twice in each line rather than producing a native 320x240 video signal. Overall
+this means the line PIO needs to output a new pixel value once every 10 cycles.</p>
+<p>Here&rsquo;s the command words we&rsquo;re feeding the sync PIO program, delays don&rsquo;t yet
+correspond to actual VGA timings, we&rsquo;re just using a few low numbers to see what
+it produces. The VSYNC line is kept low and the HSYNC line switches with each
+new command word, rather than producing proper sync pulses. This will allow us
+to analyse how the delays relate to our output. We&rsquo;ll look at everything in
+reference to when the <code>out pins, 2</code> instruction executes on the sync SM (I&rsquo;ll
+refer to it as the sync pin set). By switching the HSYNC line every new command
+word the positive and negative edges of the HSYNC line show us when the <code>out pins, 2</code> instruction is being executed.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// vsync always 0 for this test
+</span><span style="color:#75715e">// Execute nop, delay 10, hsync = 1
+</span><span style="color:#75715e"></span>sync_timing_buffer[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">10</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">1</span>;
+<span style="color:#75715e">// Execute nop, delay 15, hsync = 0
+</span><span style="color:#75715e"></span>sync_timing_buffer[<span style="color:#ae81ff">1</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">15</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0</span>;
+<span style="color:#75715e">// Execute nop, delay 15, hsync = 1
+</span><span style="color:#75715e"></span>sync_timing_buffer[<span style="color:#ae81ff">2</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">15</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">1</span>;
+<span style="color:#75715e">// Execute `irq 4` to start pixel output, delay 100, hsync = 1
+</span><span style="color:#75715e">// The visible line has 10 pixels, with a new pixel every 10 cycles
+</span><span style="color:#75715e">// needing 10 * 10 = 100 cycles. Set our delay to that for now so we&#39;ll
+</span><span style="color:#75715e">// roughly hit the right timings.
+</span><span style="color:#75715e"></span>sync_timing_buffer[<span style="color:#ae81ff">3</span>] <span style="color:#f92672">=</span>
+    (pio_encode_irq_set(false, <span style="color:#ae81ff">4</span>) <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">100</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0</span>;
+</code></pre></td></tr></table>
+</div>
+</div><p>For the pixel data we&rsquo;ll just use numbers 1-40. The line PIO outputs 0 when
+we&rsquo;re outside of the visible region so 1-40 is used so we can see when we&rsquo;re in
+the pixel output loop part of the line PIO. Here&rsquo;s the result showing the first
+line:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/video-la-1.jpg"
+         alt="Timing diagram showing test hsync and vsync along with 10 pixels of visible line"/> 
+</figure>
+
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pio_vga">github</a></em></p>
+<p>How does the delay value in the command word map to the cycles seen for each
+low/high period of the HSYNC?  The sync PIO program has 5 instructions so with a
+delay of 0 you&rsquo;d expect the HSYNC to be held high or low for 5 cycles. But it&rsquo;s
+actually 6. The <code>out exec, 16</code> is hiding an extra cycle, one cycle to shift an
+instruction from the OSR, another cycle to execute it. If we measure the high
+and low periods of the HSYNC line we find they each take the corresponding delay
+value + 6 as expected. E.g.  look at the bit highlighted in blue where HSYNC is
+held high. This corresponds to <code>sync_timing_buffer[2]</code>, that has a delay value
+of 15 and HSYNC is held high for 21 cycles (15 + 6).</p>
+<p>The trickier part is how the timing of the command words relates to the line SM
+which outputs the pixel data. Look back at the sync program. After fetching a
+new command word it immediate sets the pins, reads the delay value and executes
+an instruction via <code>out exec</code> and delays after all of this is done. The <code>irq</code>
+instruction is used to trigger the pixel output from the line SM. The line SM
+will execute its <code>set x, 9</code> instruction two cycles after the <code>irq</code> instruction
+is executed. One cycle after the <code>irq</code> is executed the <code>wait 1 irq 4</code>
+instruction sees it&rsquo;s been raised, so the cycle after than <code>set x, 9</code> is
+executed. The two PIO programs line up like this:</p>
+<pre><code>|      Sync SM                        |                       Line SM                                     |
+-----------------------------------------------------------------------------------------------------------
+| out pins, 2                         | wait 1 irq  4 ; line SM waiting for irq 4                         |
+| out x, 14                           | wait 1 irq  4                                                     |
+| out exec, 16                        | wait 1 irq  4                                                     |
+| [irq 4]      ;irq from command word | wait 1 irq  4                                                     |
+| jmp x--, wait_loop                  | wait 1 irq  4 ; irq 4 set last cycle, so final cycle of wait here |
+| jmp x--, wait_loop                  | set x, 9                                                          |
+| jmp x--, wait_loop                  | pull                                                              |
+| jmp x--, wait_loop                  | out pins, 6 [7]                                                   |
+</code></pre><p>Looking at this you can see there&rsquo;s 7 instructions between pins being set in the
+sync SM based on the command word and the first pixel being output in the line
+SM. This results in a delay of 7 cycles between the two. We can measure the gap
+on the logic analyzer output to confirm:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/video-la-2.jpg"
+         alt="Timing diagram showing zoom of start of line"/> 
+</figure>
+
+<p>How about at the end of the line? What delay do we need in the sync SM command
+word for the visible part of the line so that the pin set of the next sync SM
+command word lines up with 0 pixel output at the end of the line? The Line SM
+outputs a new pixel every 10 cycles, so the time taken from the first pixel
+output to the 0 pixel output is 100 cycles. In total we have 107 cycles between
+the sync SM setting the pins and the 0 pixel output. Between pin settings in the
+sync SM we have 6 cycles + the delay value. To get the pin set to match with the
+0 pixel output we want a total of 107 cycles between pin settings giving us a
+delay value of 101 (107 = 6 + 101). Our test command words used a delay value of
+100 for the visible line, 1 less than we need. If we look at the logic analyzer
+the pin setting for the front porch command word happens 1 cycle before we see
+the 0 pixel, confirming our analysis.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/video-la-3.jpg"
+         alt="Timing diagram showing zoom of end of line"/> 
+</figure>
+
+<p>Finally before we can produce a proper video signal we need to tweak our line
+PIO program. It sets <code>x</code> to 9 as a pixel counter, we&rsquo;ll have 320 pixels each
+line and <code>set</code> only has 5-bits of immediate (so 31 is the biggest value we could
+set <code>x</code> to). We work around this using the input shift register to make 319 out
+of individual 5-bit pieces, we&rsquo;ll also want to output 16 bits per pixel (the top
+bit gets ignored but then a pixel is 2 bytes making the image encoding simpler).</p>
+<pre><code>.program line_out
+    wait 1 irq  4 ; wait til triggered by sync SM
+    set x, 31 ; Setup x as a pixel counter (x = 319)
+    in x, 5
+    set x, 9
+    in x, 27
+    mov x, isr
+line_loop:
+    pull ifempty ; only pull if we've shifted out two pixels (32 bits)
+    out pins, 16 [7] ; output to the pins and delay (to give 10 cycles per loop)
+    jmp x--, line_loop ; output next pixel if we have pixels left
+end:
+    set x, 0 ; output a 0 pixel after the visible line
+    mov pins, x
+.wrap
+</code></pre><p>The new pixel counter setup adds some extra delay between the sync SM pin set
+and the first pixel output. It&rsquo;s 4 extra instructions so that delay goes from 7
+to 11 cycles.</p>
+<p>With that analysis done we can work out the actual delays we need for proper VGA
+640 * 480 timings. Remember our pixel clock is 25 MHz and the pico is running at
+125 MHz so the VGA timing values above need multiplying by 5. Here&rsquo;s the final
+delays we&rsquo;ll use</p>
+<ul>
+<li>hsync pulse - 96 pixel clocks * 5 = 480 cycles, 480 - 6 = 474 delay</li>
+<li>back porch - 48 pixel clocks * 5 = 240 cycles, 240 - 6 - 11 (pixel output
+delay) = 223 delay</li>
+<li>visible line - 640 pixel clocks * 5 = 3200 cycles, 3200 - 6 + 11 (pixel output
+delay) = 3205 delay</li>
+<li>front porch - 16 pixel clocks * 5 = 80 cycles, 80 - 6 = 74 delay</li>
+</ul>
+<p>Note the pixel output delay applied to the back porch and visible line timings.
+The back porch command delays for fewer cycles than the actual back porch as
+there&rsquo;s 11 cycles between the visible line doing its sync pin set and the first
+pixel appearing and the actual back porch must be timed to end with the first
+pixel appearing. Similarly the visible line gains those cycles so the front
+porch sync pin set lines up with the 0 pixel being output. Luckily as the HSYNC
+and VSYNC don&rsquo;t actually have to change between the back porch, visible line and
+front porch the timing different between the sync pin set happening and the
+pixel output doesn&rsquo;t matter. Here&rsquo;s our final set of command words to give
+horizontal sync timing for the visible line.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Hsync pulse Execute nop, delay 474, vsync = 1, hsync = 0
+</span><span style="color:#75715e"></span>visible_line_timing_buffer[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">474</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">2</span>;
+<span style="color:#75715e">// Back porch, execute nop, delay 223, vsync = 1, hsync = 1
+</span><span style="color:#75715e"></span>visible_line_timing_buffer[<span style="color:#ae81ff">1</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">223</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+<span style="color:#75715e">// Visible line, execute irq 4, delay 3205, vsync = 1, hsync = 1
+</span><span style="color:#75715e"></span>visible_line_timing_buffer[<span style="color:#ae81ff">2</span>] <span style="color:#f92672">=</span>
+    (pio_encode_irq_set(false, <span style="color:#ae81ff">4</span>) <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">3205</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+<span style="color:#75715e">// Front porch, execute nop, delay 74, vsync = 1, hsync = 1
+</span><span style="color:#75715e"></span>visible_line_timing_buffer[<span style="color:#ae81ff">3</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">74</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+</code></pre></td></tr></table>
+</div>
+</div><p>Next up is producing a full frame&rsquo;s worth of sync. Luckily getting the
+horizontal sync and pixel output was the hard part. Vertical sync is timed in
+terms of lines so all we have to do is feed the same commands words we have for
+the visible line buffer with some slight tweaks. Producing the vsync pulse in
+the appropriate lines and only signalling the interrupt that starts line output
+in the visible lines. This gives us two extra command buffers:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Non visible lines use same timings for uniformity, always execute nop as
+</span><span style="color:#75715e">// no pixels are output.
+</span><span style="color:#75715e">// Sync command words for vsync front and back porch
+</span><span style="color:#75715e"></span>vblank_porch_buffer[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">474</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">2</span>;
+vblank_porch_buffer[<span style="color:#ae81ff">1</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">223</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+vblank_porch_buffer[<span style="color:#ae81ff">2</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">3205</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+vblank_porch_buffer[<span style="color:#ae81ff">3</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">74</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">3</span>;
+
+<span style="color:#75715e">// Sync command words for vsync sync pulse
+</span><span style="color:#75715e"></span>vblank_sync_buffer[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">474</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">0</span>;
+vblank_sync_buffer[<span style="color:#ae81ff">1</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">223</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">1</span>;
+vblank_sync_buffer[<span style="color:#ae81ff">2</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">3205</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">1</span>;
+vblank_sync_buffer[<span style="color:#ae81ff">3</span>] <span style="color:#f92672">=</span>
+    (pio_encode_nop() <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">16</span>) <span style="color:#f92672">|</span> (<span style="color:#ae81ff">74</span> <span style="color:#f92672">&lt;&lt;</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">|</span> <span style="color:#ae81ff">1</span>;
+</code></pre></td></tr></table>
+</div>
+</div><p>There&rsquo;s just one &lsquo;vblank porch&rsquo; buffer for both front and back porch as they&rsquo;re
+identical in terms of what happens each line.</p>
+<p>To tie this all together we&rsquo;ll use two DMA channels, one will feed the sync SM
+with command words and the other will feed the line SM with pixel data. We can
+use a DMA transfer complete interrupt handler to coordinate it all. For both we
+need to keep track of what line is next for each SM, noting it may not always be
+the same.  The sync SM FIFO can hold 8 command words, 2 lines worth which the
+sync DMA will swiftly fill. Meanwhile we have 320 pixels, 160 32-bit words, for
+the line DMA to transfer. Thus the sync DMA channel can be a couple of lines a
+head of the line DMA channel. Here&rsquo;s the interrupt handler:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">int</span> current_timing_line <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+<span style="color:#66d9ef">int</span> current_display_line <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">__not_in_flash_func</span>(dma_irh)() {
+    <span style="color:#66d9ef">if</span> (dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">&amp;</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> sync_dma_chan)) {
+        dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> <span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> sync_dma_chan;
+
+        <span style="color:#66d9ef">if</span> (current_timing_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">524</span>) {
+            current_timing_line<span style="color:#f92672">++</span>;
+        } <span style="color:#66d9ef">else</span> {
+            current_timing_line <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        }
+
+        <span style="color:#75715e">// `current_timing_line` is the line we&#39;re about to stream out sync
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// command words for
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">if</span> (current_timing_line <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> <span style="color:#f92672">||</span> (current_timing_line <span style="color:#f92672">==</span> <span style="color:#ae81ff">1</span>)) {
+            <span style="color:#75715e">// VSync pulse for lines 0 and 1
+</span><span style="color:#75715e"></span>            dma_channel_set_read_addr(sync_dma_chan, vblank_sync_buffer, true);
+        } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (current_timing_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">35</span>) {
+            <span style="color:#75715e">// VGA back porch following VSync pulse (lines 2 - 34)
+</span><span style="color:#75715e"></span>            dma_channel_set_read_addr(sync_dma_chan, vblank_porch_buffer, true);
+        } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (current_timing_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">515</span>) {
+            <span style="color:#75715e">// Visible lines following back porch (lines 35 - 514)
+</span><span style="color:#75715e"></span>            dma_channel_set_read_addr(sync_dma_chan, visible_line_timing_buffer, true);
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#75715e">// Front porch following visible lines (lines 515 - 524)
+</span><span style="color:#75715e"></span>            dma_channel_set_read_addr(sync_dma_chan, vblank_porch_buffer, true);
+        }
+    }
+
+    <span style="color:#66d9ef">if</span> (dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">&amp;</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> line_dma_chan)) {
+        dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> <span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> line_dma_chan;
+
+        <span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">479</span>) {
+            <span style="color:#f92672">++</span>current_display_line;
+        } <span style="color:#66d9ef">else</span> {
+            current_display_line <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        }
+
+        dma_channel_set_read_addr(line_dma_chan, line_data_buffer, true);
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>At this point it&rsquo;d be great if we had sufficient memory to capture a full
+frame&rsquo;s worth of pixel output and sync with the logic analyzer SM but we don&rsquo;t.
+Instead to test things I temporarily dropped to 2 bits per pixel, maintained the
+same horizontal line timings but only output a small number of vertical lines, 8
+visible lines, 1 VSYNC line, 3 front porch lines and 2 back proch lines. For the
+2-bit pixel data I used an alternating 01, 10 pattern. This lets you see the
+pixels change as well as providing distinct visible and blank portions on the
+pixel data (only time we should see 00 is when we&rsquo;re not outputting pixel data).
+With this restricted frame we can fit everything in memory, here&rsquo;s the result
+from the logic analyzer:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/video-la-4.jpg"
+         alt="Timing diagram showing full frame with a reduced number of lines"/> 
+</figure>
+
+<p>I zoomed around on this, measuring the various intervals, for example here&rsquo;s a
+zoom of the beginning of a line measuring the back porch (the time between the
+sync pulse and the beginning of the visible line). It is 240 cycles long, so 240
+/ 5 = 48 pixel clocks, exactly the timing we need. I checked all of the timings
+and everything looked good. We are ready to produce video!</p>
+<figure class="text-center">
+    <img src="/media/play_pico/video-la-5.jpg"
+         alt="Timing diagram showing zoom of back porch"/> 
+</figure>
+
+<p>Well almost, how exactly are we generating the pixels to show? The observant
+will note the interrupt handler just has a buffer for a single line
+<code>line_data_buffer</code>, there is no frame buffer. This is for memory reasons.  The
+Pico does just have enough memory for a 320x240 framebuffer at 16 bits per pixel
+(320 * 240 * 2 = 150 KiB) but I plan to generate pixel data on the fly rather
+than using a framebuffer. I&rsquo;ll get into the details in the next blog, for now
+we&rsquo;ll make do with a test pattern, one pixel of red, one of blue, one of green
+and one of black repeated over and over. I&rsquo;ll put a white pixel at the beginning
+and end as well as make a modification to the interrupt handler to use a
+different buffer of entirely white pixels for the first and last lines. This
+will give a white border to the test pattern and allow us to check the edges of
+the screen end up being where we think they are. Here&rsquo;s the modified part of the
+interrupt handler:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">if</span> (dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">&amp;</span> (<span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> line_dma_chan)) {
+    dma_hw<span style="color:#f92672">-&gt;</span>ints0 <span style="color:#f92672">=</span> <span style="color:#ae81ff">1u</span> <span style="color:#f92672">&lt;&lt;</span> line_dma_chan;
+
+    <span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">479</span>) {
+        <span style="color:#f92672">++</span>current_display_line;
+    } <span style="color:#66d9ef">else</span> {
+        current_display_line <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    }
+
+    <span style="color:#75715e">// `current_display_line` is the line we&#39;re about to stream pixel data
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// out for
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> ((current_display_line <span style="color:#f92672">&lt;=</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">||</span> (current_display_line <span style="color:#f92672">&gt;=</span> <span style="color:#ae81ff">478</span>)) {
+         <span style="color:#75715e">// Output white border line for lines 0, 1, 478, 479 (two lines as
+</span><span style="color:#75715e"></span>         <span style="color:#75715e">// ultimately producing 320x240 resolution so each line is repeated
+</span><span style="color:#75715e"></span>         <span style="color:#75715e">// twice).
+</span><span style="color:#75715e"></span>        dma_channel_set_read_addr(line_dma_chan, white_line_data_buffer, true);
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Otherwise use a pattern line
+</span><span style="color:#75715e"></span>        dma_channel_set_read_addr(line_dma_chan, pattern_line_data_buffer, true);
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/master/pio_vga">github</a></em></p>
+<p>Finally how do we actually connect the VGA cable up to the pico? One answer is
+the <a href="https://shop.pimoroni.com/products/pimoroni-pico-vga-demo-base">Pimironi Pico VGA Demo
+Base</a> which I
+haven&rsquo;t yet bought (indeed it wasn&rsquo;t available when I started working on this)
+but it&rsquo;s easy enough to rig it up yourself. The sync lines can connect straight
+through via current limiting resistor. For the R,G,B lines you can create a
+primitive but effective digital to analog convertor using just some resistors,
+see <a href="https://datasheets.raspberrypi.org/rp2040/hardware-design-with-rp2040.pdf">Hardware design with
+RP2040</a>
+for the gory details (Chapter 3 which describes a board very similar to the
+Pimoroni one). Here&rsquo;s a photo of my breadboard setup wired into a VGA
+connector breakout (which you can obtain from ebay or amazon).</p>
+<figure class="text-center">
+    <img src="/media/play_pico/vga-breadboard.jpg"
+         alt="Breadboard with resistor based VGA DAC"/> 
+</figure>
+
+<p>With everything now in place let&rsquo;s connect up the monitor, run our test program
+and see what happens&hellip;</p>
+<figure class="text-center">
+    <img src="/media/play_pico/vga-test-pattern.jpg"
+         alt="Running the test pattern program with the breadboard DAC"/> 
+</figure>
+
+<p>Success! Here&rsquo;s a screen close up so you can see the pattern better:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/vga-test-pattern-zoom.jpg"
+         alt="Zoom of the test pattern on the screen"/> 
+</figure>
+
+<p>Note that it&rsquo;s important not to setup or try to use the USB UART (don&rsquo;t call
+<code>stdio_init_all</code>, <code>printf</code> etc). It seems to interfere with the video signal
+generation and cause some visual artifacts, probably because of interrupts
+dealing with USB.  The plain serial UART may work fine but I haven&rsquo;t tried it
+out.</p>
+<p>Next up we want to produce something more interesting than a test
+pattern which I&rsquo;ll discuss in the next blog.</p>
+
+</div>
+
+</main>
+</body>
+</html>
