@@ -1,0 +1,1262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Playing with the Pico Part 6 - Producing VGA Video</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Playing with the Pico Part 6 - Producing VGA Video</h1>
+  <p>In <a href="https://gregchadwick.co.uk/blog/playing-with-the-pico-pt5/">Part 5</a> we produced a simple
+video test pattern, how about something more interesting, like this?</p>
+<figure class="text-center">
+    <img src="/media/play_pico/sprite-demo-final.jpg"
+         alt="A monitor attached to a pico displaying some character sprites over a tile map"/> 
+</figure>
+
+<p><em>Full code can be found on <a href="https://www.github.com/GregAC/pico-stuff/tree/main/pio_vga">github</a></em></p>
+<p>This is the final result of the code discussed below, so how does it all work?</p>
+<p>It would be straight-forward to display a static image or
+framebuffer. With the 320x240 resolution and 2 bytes per pixel that&rsquo;s 150 KiB
+which we can fit in the Pico&rsquo;s memory. The problem is we can only fit one
+frame&rsquo;s worth of image in memory, what if we want a changing image, e.g. some
+kind of game?</p>
+<p>Say we did want to write a game, we could just use a single frame buffer, the
+problem is if we update the buffer whilst it&rsquo;s being displayed you end up seeing
+a mix of the old and new frames. You can avoid this by only updating the buffer
+when you&rsquo;re in the vertical blanking interval but this gives you limited time to
+draw your frame. If you&rsquo;re careful you can &lsquo;chase the beam&rsquo; where you update the
+frame buffer as it&rsquo;s being drawn but carefully only change a particular pixel
+once it&rsquo;s been output. This gives you more total frame draw time but will be
+more awkward to get right.</p>
+<p>Even with careful programming to allow use of a single buffer without visual
+artifacts you&rsquo;re still using a lot of memory. Plus using 150 KiB of 264 KiB
+memory total just for the framebuffer you&rsquo;ll have limited memory available for
+everything you need to draw the frame.</p>
+<p>We&rsquo;re going to choose another tactic, drawing the frame one scanline at a
+time. Whilst we&rsquo;re outputting one scanline we&rsquo;ll draw the next one. This is
+the &lsquo;chasing the beam&rsquo; technique but avoiding a full frame buffer. We will have
+two line buffers, one for the line we&rsquo;re currently outputting and one of the
+line we&rsquo;re currently drawing.</p>
+<p>Let&rsquo;s make some alterations to the code from the previous blog to support this.
+We already had two separate line buffers one for a white line and the other for
+a red, green, blue, black pattern. We&rsquo;ll switch this to two generic buffers
+using one for the even lines (0, 2, 4 etc) and the other for the odd lines (1,
+3, 5 etc). Whilst one buffer is being streamed out by DMA the other will be
+filled by software. This can be done with the following code in the interrupt
+handler:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">2</span>) {
+    dma_channel_set_read_addr(line_dma_chan, line_data_buffer_odd, true);
+} <span style="color:#66d9ef">else</span> {
+    dma_channel_set_read_addr(line_dma_chan, line_data_buffer_even, true);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>There&rsquo;s a subtlety here as we&rsquo;re outputting 320x240 graphics at a 640x480
+resolution. So every line gets repeated twice. This is what the
+<code>current_display_line &amp; 2</code> accomplishes. Display lines 0 and 1
+(<code>current_display_line &amp; 2 == 0</code>) both output the first even line. Display lines
+2 and 3 (<code>current_display_line &amp; 2 == 1</code>) both output the first odd line.</p>
+<p>How do we coordinate this with whatever software is filling the line buffers? We
+don&rsquo;t want to do that in the interrupt handler as generally they should be kept
+as short as possible (because they block other interrupts from occurring). I&rsquo;ll
+use a very simple polling loop. It&rsquo;ll use a boolean flag <code>new_line_needed</code>. The
+polling loop will wait for the interrupt handler to set <code>new_line_needed</code> and
+start filling the appropriate buffer when it is set. A separate <code>next_line</code>
+variable will hold which (320x240) line needs to be drawn next. We&rsquo;ll call a
+function <code>draw_line(int line_y, uint16_t* line)</code> which will draw whatever
+should be at the line <code>line_y</code> position on the screen into the buffer <code>line</code>.</p>
+<p>Here&rsquo;s the polling loop:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">while</span>(<span style="color:#ae81ff">1</span>) {
+    <span style="color:#75715e">// Wait for an interrupt to occur
+</span><span style="color:#75715e"></span>    __wfi();
+
+    <span style="color:#75715e">// Temporarily disable interrupts to avoid race conditions around
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// `new_line_needed` being written
+</span><span style="color:#75715e"></span>    uint32_t interrupt_status <span style="color:#f92672">=</span> save_and_disable_interrupts();
+
+    <span style="color:#75715e">// Check if a new line is needed, if so clear the flag (so the loop doesn&#39;t
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// immediately try to draw it again)
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">bool</span> do_draw_line <span style="color:#f92672">=</span> new_line_needed;
+    <span style="color:#66d9ef">if</span> (new_line_needed) {
+        new_line_needed <span style="color:#f92672">=</span> false;
+    }
+
+    <span style="color:#75715e">// Reenable interrupts
+</span><span style="color:#75715e"></span>    restore_interrupts(interrupt_status);
+
+    <span style="color:#75715e">// If a new line is required call `draw_line` to fill the relevant line
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// buffer
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> (do_draw_line) {
+        <span style="color:#66d9ef">if</span> (next_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">1</span>) {
+            draw_line(next_line, line_data_buffer_odd);
+        } <span style="color:#66d9ef">else</span> {
+            draw_line(next_line, line_data_buffer_even);
+        }
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Here&rsquo;s the code from the interrupt handler that sets <code>new_line_needed</code> and
+<code>next_line</code>:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">9
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Need a new line every two display lines
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">if</span> ((current_display_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+    <span style="color:#75715e">// At display lines 478 &amp; 479 we&#39;re drawing the final line so don&#39;t need
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// to request a new line
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">478</span>) {
+        new_line_needed <span style="color:#f92672">=</span> true;
+        next_line <span style="color:#f92672">=</span> (current_display_line <span style="color:#f92672">/</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>;
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We&rsquo;re not quite done yet, we need to think a little more about the beginning of
+the frame. The interrupt that&rsquo;s setting <code>new_line_needed</code> is doing it when the
+line DMA channel is done sending buffer data. This is fine in the middle of the
+frame but for the first 2 display lines of the frame there&rsquo;s no previous display
+lines to trigger the interrupt to kick off <code>draw_line</code> for line 0. An easy way
+to handle this is with some dummy lines. We&rsquo;ll start outputting visible lines
+before the display region, just streaming out 0 pixels. This won&rsquo;t alter the
+output on the pins but will give us the DMA interrupt with the exact same timing
+we get during the visible lines.</p>
+<p>We&rsquo;ll output 3 dummy lines, by adding some visible lines to the beginning of the
+command words we send to the sync PIO. At the end of the first dummy line we&rsquo;ll
+signal <code>new_line_needed</code> setting <code>next_line</code> to 0. Giving the software the same
+time to draw the first line that it gets for all other lines (the time taken to
+output a line twice).</p>
+<p>To save a little bit of memory we&rsquo;ll set the line DMA not to increment its read
+address for the zero lines, so we&rsquo;ll point it at a 32-bit memory location
+containing a zero which it will read over and over. This requires a little extra
+code to alter the line DMA config between the dummy lines and the real display
+lines. Here&rsquo;s the final code for the interrupt handler:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">==</span> <span style="color:#ae81ff">479</span>) {
+    <span style="color:#75715e">// Final line of this frame has completed so signal new frame and setup for next.
+</span><span style="color:#75715e"></span>    new_frame <span style="color:#f92672">=</span> true;
+
+    <span style="color:#75715e">// 3 dummy lines before real lines
+</span><span style="color:#75715e"></span>    current_display_line <span style="color:#f92672">=</span> <span style="color:#f92672">-</span><span style="color:#ae81ff">3</span>;
+
+    <span style="color:#75715e">// Setup Line DMA channel to read zero lines for dummy lines and set it going.
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// Disable read increment so just read zero over and over for dummy lines.
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// DMA won&#39;t actually begin until line PIO starts consuming it in the next
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// frame.
+</span><span style="color:#75715e"></span>    channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>line_dma_chan_config, false);
+    dma_channel_set_config(line_dma_chan, <span style="color:#f92672">&amp;</span>line_dma_chan_config, false);
+    dma_channel_set_read_addr(line_dma_chan, <span style="color:#f92672">&amp;</span>line_data_zero_buffer, true);
+    <span style="color:#66d9ef">return</span>;
+}
+
+current_display_line<span style="color:#f92672">++</span>;
+
+<span style="color:#75715e">// Need a new line every two display lines
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">if</span> ((current_display_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+    <span style="color:#75715e">// At display lines 478 &amp; 479 we&#39;re drawing the final line so don&#39;t need
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// to request a new line
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">!=</span> <span style="color:#ae81ff">478</span>) {
+        new_line_needed <span style="color:#f92672">=</span> true;
+        next_line <span style="color:#f92672">=</span> (current_display_line <span style="color:#f92672">/</span> <span style="color:#ae81ff">2</span>) <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>;
+    }
+}
+
+<span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+    <span style="color:#75715e">// Beginning visible lines, turn on read increment for line DMA
+</span><span style="color:#75715e"></span>    channel_config_set_read_increment(<span style="color:#f92672">&amp;</span>line_dma_chan_config, true);
+    dma_channel_set_config(line_dma_chan, <span style="color:#f92672">&amp;</span>line_dma_chan_config, false);
+}
+
+<span style="color:#75715e">// Negative lines are dummy lines so output from zero buffer, otherwise
+</span><span style="color:#75715e">// choose even or odd line depending upon current display line
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">0</span>) {
+    dma_channel_set_read_addr(line_dma_chan, <span style="color:#f92672">&amp;</span>line_data_zero_buffer, true);
+} <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (current_display_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">2</span>) {
+    dma_channel_set_read_addr(line_dma_chan, line_data_buffer_odd, true);
+} <span style="color:#66d9ef">else</span> {
+    dma_channel_set_read_addr(line_dma_chan, line_data_buffer_even, true);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This adds a <code>new_frame</code> flag we can use in our polling loop:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">while</span>(<span style="color:#ae81ff">1</span>) {
+    <span style="color:#75715e">// Wait for an interrupt to occur
+</span><span style="color:#75715e"></span>    __wfi();
+
+    <span style="color:#75715e">// Temporarily disable interrupts to avoid race conditions around
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// `new_line_needed` being written
+</span><span style="color:#75715e"></span>    uint32_t interrupt_status <span style="color:#f92672">=</span> save_and_disable_interrupts();
+
+    <span style="color:#75715e">// Check if a new line is needed, if so clear the flag (so the loop doesn&#39;t immediately try
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// to draw it again)
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">bool</span> do_draw_line <span style="color:#f92672">=</span> new_line_needed;
+    <span style="color:#66d9ef">if</span> (new_line_needed) {
+        new_line_needed <span style="color:#f92672">=</span> false;
+    }
+
+    <span style="color:#75715e">// Check if a new frame is needed, if so clean the flag (so the loop doesn&#39;t immediately
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// signal a new frame again)
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">bool</span> do_end_of_frame <span style="color:#f92672">=</span> new_frame;
+    <span style="color:#66d9ef">if</span> (new_frame) {
+        new_frame <span style="color:#f92672">=</span> false;
+    }
+
+    <span style="color:#75715e">// Reenable interrupts
+</span><span style="color:#75715e"></span>    restore_interrupts(interrupt_status);
+
+    <span style="color:#75715e">// If a new line is required call `draw_line` to fill the relevant line
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// buffer
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> (do_draw_line) {
+        <span style="color:#66d9ef">if</span> (next_line <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">1</span>) {
+            draw_line(next_line, line_data_buffer_odd);
+        } <span style="color:#66d9ef">else</span> {
+            draw_line(next_line, line_data_buffer_even);
+        }
+    }
+
+    <span style="color:#66d9ef">if</span> (do_end_of_frame) {
+        end_of_frame();
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We&rsquo;ll write a <code>draw_line</code> and <code>end_of_frame</code> to produce another test pattern,
+one that changes line by line and frame by frame. It has a 1 pixel white border
+like the previous one and produces alternating bars of red, green and blue with
+a colour gradient in each going from black to full red, green or blue. Every
+frame we adjust the start point of this gradient. Here&rsquo;s the code:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">45
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">46
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">47
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">48
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">49
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">50
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">51
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">52
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">53
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">int</span> start_colour_val <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+<span style="color:#66d9ef">bool</span> start_colour_val_inc <span style="color:#f92672">=</span> true;
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">draw_line</span>(<span style="color:#66d9ef">int</span> line_y, uint16_t<span style="color:#f92672">*</span> line) {
+    <span style="color:#66d9ef">if</span> ((line_y <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) <span style="color:#f92672">||</span> (line_y <span style="color:#f92672">==</span> <span style="color:#ae81ff">239</span>)) {
+        <span style="color:#75715e">// Top and bottom lines are white
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">for</span> (<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">320</span>; <span style="color:#f92672">++</span>i) {
+            line[i] <span style="color:#f92672">=</span> <span style="color:#ae81ff">0xffff</span>;
+        }
+
+        <span style="color:#66d9ef">return</span>;
+    }
+
+    <span style="color:#75715e">// Each colour area is 32 pixels high and rotate around red, green and blue. Determine whether
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// we&#39;re in a red, green or blue colour area (colour_area == 0, 1 or 2).
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> colour_area <span style="color:#f92672">=</span> (line_y <span style="color:#f92672">/</span> <span style="color:#ae81ff">32</span>) <span style="color:#f92672">%</span> <span style="color:#ae81ff">3</span>;
+    <span style="color:#75715e">// Within the colour area where are we in the gradient
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> colour_val <span style="color:#f92672">=</span> (line_y <span style="color:#f92672">+</span> start_colour_val) <span style="color:#f92672">%</span> <span style="color:#ae81ff">32</span>;
+
+    <span style="color:#75715e">// Produce R, G, B values given the colour_area and colour_val
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> r, g, b;
+    <span style="color:#66d9ef">if</span> (colour_area <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+        r <span style="color:#f92672">=</span> colour_val;g <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>; b <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (colour_area <span style="color:#f92672">==</span> <span style="color:#ae81ff">1</span>) {
+        r <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;g <span style="color:#f92672">=</span> colour_val; b <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (colour_area <span style="color:#f92672">==</span> <span style="color:#ae81ff">2</span>) {
+        r <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;g <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>; b <span style="color:#f92672">=</span> colour_val;
+    }
+
+    <span style="color:#75715e">// Fill line with calculated R, G, B values
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">for</span> (<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>; i <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">320</span>; <span style="color:#f92672">++</span>i) {
+        line[i] <span style="color:#f92672">=</span> ENCODE_RGB(r, g, b);
+    }
+
+    <span style="color:#75715e">// Set first and last pixels to white for the border
+</span><span style="color:#75715e"></span>    line[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span> <span style="color:#ae81ff">0xffff</span>;
+    line[<span style="color:#ae81ff">319</span>] <span style="color:#f92672">=</span> <span style="color:#ae81ff">0xffff</span>;
+}
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">end_of_frame</span>() {
+    <span style="color:#75715e">// Every frame increment or decrement start_colour_val
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> (start_colour_val_inc) {
+        start_colour_val<span style="color:#f92672">++</span>;
+    } <span style="color:#66d9ef">else</span> {
+        start_colour_val<span style="color:#f92672">--</span>;
+    }
+
+    <span style="color:#66d9ef">if</span> (start_colour_val <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+        start_colour_val_inc <span style="color:#f92672">=</span> true;
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> (start_colour_val <span style="color:#f92672">==</span> <span style="color:#ae81ff">31</span>) {
+        start_colour_val_inc <span style="color:#f92672">=</span> false;
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Finally, an important point. <code>new_line_needed</code>, <code>new_frame</code> and <code>next_line</code> need to
+be declared <code>volatile</code>, like this:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">bool</span> new_frame;
+<span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">bool</span> new_line_needed;
+<span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">int</span> next_line;
+</code></pre></td></tr></table>
+</div>
+</div><p>This tells the compiler the value might change unexpectedly so it has to read or
+write the actual memory holding the variable every time rather than optimising
+(either leaving it in a register or just realising the variable must be some
+fixed value at a particular point in the code so not even checking it).  Look at
+this simplified version of our polling loop to see what happens without
+volatile:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">while</span> (<span style="color:#ae81ff">1</span>) {
+  <span style="color:#66d9ef">if</span> (new_line_needed) {
+    draw_line(next_line, line_data_buffer);
+  }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>If <code>new_line_needed</code> is <code>false</code> at the start of this loop the compiler could just
+optimise it to an infinite loop that does nothing. However we know an interrupt
+will eventually set <code>new_line_needed</code> to <code>true</code>. By using a <code>volatile</code> variable
+for <code>new_line_needed</code> the compiler won&rsquo;t do this optimisation and instead loop
+checking the memory that holds <code>new_line_needed</code> each time.</p>
+<p>Here&rsquo;s a video of the test pattern in action:</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/test-pattern-moving.mp4" type="video/mp4">
+</video>
+<p>At the beginning I promised something more interesting and we&rsquo;ve just produced
+yet another test pattern but we now have everything we need to move on to
+drawing complex frames. First up let&rsquo;s look at sprites.</p>
+<p>A sprite is just an image you draw on the display. You provide the sprite image
+data, a width and height, an X and Y position and let the graphics library or
+graphics hardware do the rest. They were a major feature of earlier 8-bit and
+16-bit consoles (like the NES, SNES and Megadrive) as well as some 80s and early
+90s home computers (like the Commodore 64 and Amiga). The hardware of these
+machines had native sprite support, allowing you to draw complex frames without
+needing enough memory for a full frame buffer.</p>
+<p>Here&rsquo;s an example set of sprites for a character with a few basic animations
+(Art by <a href="https://opengameart.org/content/twelve-16x18-rpg-sprites-plus-base">Charles
+Gabriel</a>).
+The image size has been increased so it doesn&rsquo;t look too tiny on modern monitor
+resolutions.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/sprite-sheet-example.jpg"
+         alt="A sprite sheet containing multiple animation frames for a single character"/> 
+</figure>
+
+<p>Generally sprites can have transparent pixels, allowing you to draw complex
+objects over a background and this implementation will be no exception. Any
+bright pink (R = 31, G = 0, B = 31) pixels in a sprite will be transparent.</p>
+<p>Given a list of sprites we can determine which are on the scanline we are
+currently drawing, these are the active sprites for that scanline. After
+determining the active sprites we just copy the non-transparent pixels from the
+relevant line of sprite data from each out to the scanline. Overlapping sprites
+are dealt with using the order of the list. A sprite that appears earlier in the
+list will be drawn on top of a sprite that appears later on the list.</p>
+<p>What does this look like in code? To keep things simple we&rsquo;ll keep sprites to a
+fixed width of 16, but allow varying height. Using a power of 2 for the width is
+important as it allows a faster calculation for the pixel data address of a
+specific line.</p>
+<p>We&rsquo;ll begin by creating a structure to describe a sprite, defining a couple
+of constants and creating an array to hold our sprite info.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">struct</span> {
+    uint16_t<span style="color:#f92672">*</span> data_ptr;
+    <span style="color:#66d9ef">unsigned</span> <span style="color:#66d9ef">int</span> height;
+    <span style="color:#66d9ef">int</span> x;
+    <span style="color:#66d9ef">int</span> y;
+    <span style="color:#66d9ef">bool</span> enabled;
+} sprite_info_t;
+
+<span style="color:#75715e">#define NUM_SPRITES 128
+</span><span style="color:#75715e">#define MAX_SPRITES_PER_LINE 20
+</span><span style="color:#75715e">#define SPRITE_WIDTH 16
+</span><span style="color:#75715e"></span>
+sprite_info_t screen_sprites[NUM_SPRITES];
+
+<span style="color:#66d9ef">const</span> uint16_t transparent_colour <span style="color:#f92672">=</span> <span style="color:#ae81ff">0x7c1f</span>;
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">init_sprites</span>() {
+    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> NUM_SPRITES; <span style="color:#f92672">++</span>i) {
+        screen_sprites[i].active <span style="color:#f92672">=</span> false;
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We have a maximum number of sprites we can store in the array <code>NUM_SPRITES</code> as
+well as a maximum number of sprites per scanline <code>MAX_SPRITES_PER_LINE</code>. We need
+to limit this to ensure our scanline is drawn fast enough. The more sprites per
+line, the more pixels it needs to copy around and the slower the line draw will
+be. Take too long and it won&rsquo;t be ready in time and the final frame will be
+messed up. I chose 20 sprites per line which allows us to fully fill a scan line
+with side by side sprites (though of course they can overlap) and 128 sprites in
+total as that felt like a decent number. If these are set too high we&rsquo;ll get
+graphical errors as we&rsquo;ll take too long to draw a scanline. I&rsquo;ll return to
+looking at how we can make scanline drawing faster and what the maximum limits
+are here in a later blog.</p>
+<p>Next we&rsquo;ll have a specific active sprite structure and a way to determine which
+sprites are on a given scanline (so become the actives sprites for that
+scanline).</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">struct</span> {
+    <span style="color:#75715e">// Single line of sprite data for scanline sprite is active for
+</span><span style="color:#75715e"></span>    uint16_t<span style="color:#f92672">*</span> line_data;
+    <span style="color:#75715e">// Screen X coordinate sprite starts at
+</span><span style="color:#75715e"></span>    uint16_t x;
+} active_sprite_t;
+
+active_sprite_t cur_active_sprites[MAX_SPRITES_PER_LINE];
+
+<span style="color:#75715e">// Return true is scanline with Y coordiate `line_y` contains `sprite`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">bool</span> <span style="color:#a6e22e">is_sprite_on_line</span>(sprite_info_t sprite, uint16_t line_y) {
+    <span style="color:#66d9ef">return</span> (sprite.y <span style="color:#f92672">&lt;=</span> line_y) <span style="color:#f92672">&amp;&amp;</span> (line_y <span style="color:#f92672">&lt;</span> sprite.y <span style="color:#f92672">+</span> sprite.height);
+}
+
+active_sprite_t <span style="color:#a6e22e">calc_active_sprite_info</span>(sprite_info_t sprite, uint16_t line_y) {
+    <span style="color:#66d9ef">int</span> sprite_line <span style="color:#f92672">=</span> line_y <span style="color:#f92672">-</span> sprite.y;
+
+    <span style="color:#66d9ef">return</span> (active_sprite_t){
+        .line_data <span style="color:#f92672">=</span> sprite.data_ptr <span style="color:#f92672">+</span> sprite_line <span style="color:#f92672">*</span> SPRITE_WIDTH,
+        .x <span style="color:#f92672">=</span> sprite.x
+    };
+}
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">determine_active_sprites</span>(uint16_t line_y) {
+    <span style="color:#75715e">// Iterate through all sprites
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> NUM_SPRITES; <span style="color:#f92672">++</span>i) {
+        <span style="color:#66d9ef">if</span> (screen_sprites[i].enabled <span style="color:#f92672">&amp;&amp;</span> is_sprite_on_line(screen_sprites[i], line_y)) {
+            <span style="color:#75715e">// If sprite is enabled and is on the given scanline add it to the active sprites
+</span><span style="color:#75715e"></span>            cur_active_sprites[num_active_sprites<span style="color:#f92672">++</span>] <span style="color:#f92672">=</span>
+                calc_active_sprite_info(screen_sprites[i], line_y);
+
+            <span style="color:#66d9ef">if</span> (num_active_sprites <span style="color:#f92672">==</span> MAX_SPRITES_PER_LINE) {
+                <span style="color:#66d9ef">break</span>;
+            }
+        }
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Note that the active sprite slots only need to store two things:</p>
+<ul>
+<li>X coordinate of the sprite</li>
+<li>Address of the sprite data that contains the pixels for the scanline we&rsquo;re
+drawing</li>
+</ul>
+<p>Finally to draw looks like this:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">draw_sprite_to_line</span>(uint16_t<span style="color:#f92672">*</span> line_buffer, active_sprite_t sprite) {
+    <span style="color:#75715e">// Determine where on the scanline the sprite starts (start_line_x) and which pixel from the
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// active sprite line will be drawn first (sprite_draw_x).
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> sprite_draw_x;
+    <span style="color:#66d9ef">int</span> start_line_x;
+
+    <span style="color:#66d9ef">if</span> (sprite.x <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">0</span>) {
+        <span style="color:#75715e">// Sprite starts off screen so the sprite starts at the beginning of the scanline and the
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// first visible sprite pixel is determined from how far off screen the sprite is.
+</span><span style="color:#75715e"></span>        sprite_draw_x <span style="color:#f92672">=</span> <span style="color:#f92672">-</span>sprite.x;
+        start_line_x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Sprite starts on screen, so the first pixel from the sprite line will be drawn and the
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// sprite starts on scanline at it&#39;s X coordinate.
+</span><span style="color:#75715e"></span>        sprite_draw_x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        start_line_x <span style="color:#f92672">=</span> sprite.x;
+    }
+
+    <span style="color:#75715e">// Determine where on the scanline the sprite ends.
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> end_line_x <span style="color:#f92672">=</span> MIN(sprite.x <span style="color:#f92672">+</span> SPRITE_WIDTH, SCREEN_WIDTH);
+
+    <span style="color:#75715e">// Copy sprite pixels to scanline skipping transparent pixels
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> line_x <span style="color:#f92672">=</span> start_line_x; line_x <span style="color:#f92672">&lt;</span> end_line_x; <span style="color:#f92672">++</span>line_x, <span style="color:#f92672">++</span>sprite_draw_x) {
+        <span style="color:#66d9ef">if</span> (sprite.line_data[sprite_draw_x] <span style="color:#f92672">!=</span> transparent_colour) {
+            line_buffer[line_x] <span style="color:#f92672">=</span> sprite.line_data[sprite_draw_x];
+        }
+    }
+}
+
+<span style="color:#75715e">// Draw all sprites (up to MAX_SPRITES_PRE_LINE) that are on a scanline in its line buffer
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">draw_sprites_line</span>(uint16_t line_y, uint16_t<span style="color:#f92672">*</span> line_buffer) {
+    <span style="color:#66d9ef">int</span> num_active_sprites <span style="color:#f92672">=</span> determine_active_sprites(line_y);
+
+    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> num_active_sprites <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>;i <span style="color:#f92672">&gt;=</span> <span style="color:#ae81ff">0</span>; <span style="color:#f92672">--</span>i) {
+        draw_sprite_to_line(line_buffer, cur_active_sprites[i]);
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We can call <code>draw_sprites_line</code> directly from <code>draw_line</code> and we&rsquo;ve now got
+sprites being drawn on top of our test pattern. Using the sprites from <a href="https://opengameart.org/content/twelve-16x18-rpg-sprites-plus-base">Charles
+Gabriel</a>. I
+put a little test together, where I setup multiple sprites and animated them.
+The sprite sheet gives 6 different characters with some walking animations. To
+do the animation in <code>end_of_frame</code> you simply iterate through the enabled
+sprites and change which frame they&rsquo;re pointing to so each sprite on screen goes
+through every available sprite from the sprite sheet. Here&rsquo;s the setup code and
+the additions to <code>end_of_frame</code>. In <code>draw_line</code> we just add a call to
+<code>draw_sprites_line</code>.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">uint16_t<span style="color:#f92672">*</span> <span style="color:#a6e22e">calc_sprite_ptr</span>(<span style="color:#66d9ef">int</span> sprite_idx) {
+    <span style="color:#66d9ef">int</span> num_sprite_pixels <span style="color:#f92672">=</span> SPRITE_WIDTH <span style="color:#f92672">*</span> sprite_height;
+
+    <span style="color:#66d9ef">return</span> sprite_data <span style="color:#f92672">+</span> sprite_idx <span style="color:#f92672">*</span> num_sprite_pixels;
+}
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">setup_sprites</span>() {
+    init_sprites();
+
+    <span style="color:#66d9ef">int</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">int</span> y <span style="color:#f92672">=</span> <span style="color:#f92672">-</span>sprite_height;
+
+    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> NUM_SPRITES; <span style="color:#f92672">++</span>i) {
+        <span style="color:#66d9ef">if</span> ((i <span style="color:#f92672">%</span> MAX_SPRITES_PER_LINE) <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>) {
+            y <span style="color:#f92672">+=</span> sprite_height;
+            x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        }
+        screen_sprites[i].enabled <span style="color:#f92672">=</span> true;
+        screen_sprites[i].x <span style="color:#f92672">=</span> x;
+        screen_sprites[i].y <span style="color:#f92672">=</span> y;
+        screen_sprites[i].height <span style="color:#f92672">=</span> sprite_height;
+        screen_sprites[i].data_ptr <span style="color:#f92672">=</span> calc_sprite_ptr(i <span style="color:#f92672">%</span> <span style="color:#ae81ff">72</span>);
+        x <span style="color:#f92672">+=</span> SPRITE_WIDTH;
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">end_of_frame</span>() {
+    <span style="color:#75715e">// Pattern generating code seen above
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">//...
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// Determine new sprite data for every sprite. `anim_offset` helps specify where in the cycle
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// of frames each sprite should be. The &gt;&gt; 4 slows down the frame changes so we get a new
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// sprite every 16 frames, so slightly less than 4 per second at our 60 Hz refresh rate.
+</span><span style="color:#75715e"></span>    anim_offset<span style="color:#f92672">++</span>;
+    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> i <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;i <span style="color:#f92672">&lt;</span> NUM_SPRITES; <span style="color:#f92672">++</span>i) {
+        screen_sprites[i].data_ptr <span style="color:#f92672">=</span> calc_sprite_ptr((i <span style="color:#f92672">+</span> (anim_offset <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">4</span>)) <span style="color:#f92672">%</span> <span style="color:#ae81ff">72</span>);
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Here&rsquo;s a video of the result:</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/sprite-test-anim.mp4" type="video/mp4">
+</video>
+<p>All looks to be working well, in particular the code can handle 20 sprites per
+line and 128 lines total without any graphical issues.</p>
+<p>How do we something more useful with the background, to replace our test RGB
+pattern? The answer in tilemaps. These are somewhat like sprites but more
+constrained. The idea is we have a collection of tiles, each of a fixed size (I
+will use 16x16 here) that are placed on a fixed grid (contrast to a sprite which
+can go anywhere and can overlap with other sprites). The map itself specifies
+for each cell on the grid which tile you should use.</p>
+<p>Here&rsquo;s an example. First we have the collection of tiles we&rsquo;ll use, the tileset
+(from <a href="https://limezu.itch.io/serenevillagerevamped">LimeZu on itch.io</a>).
+Overlaid on each tile is an index number (which isn&rsquo;t present in the actual
+tileset, it just illustrates how things work). Again I&rsquo;ve increased the image
+size so it doesn&rsquo;t look too tiny.</p>
+<figure class="text-center">
+    <img src="/media/play_pico/tileset-grid.png"
+         alt="Tileset with a grid overlaid to illustrate how it breaks up into tiles with an index for each tile"/> 
+</figure>
+
+<p>Then for each cell in fixed grid we specify which tile is placed there:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/tilemap-grid.png"
+         alt="Grid with numbers on a black background, the number is the index of the tile that should be placed there"/> 
+</figure>
+
+<p>This will produce a map that looks like this:</p>
+<figure class="text-center">
+    <img src="/media/play_pico/map-render-big.png"
+         alt="Final tilemap result when tiles from tileset are filled into the grid using the provided index numbers"/> 
+</figure>
+
+<p>I wrote a small python program that takes a tileset image and a tilemap defined
+using CSV. It outputs a couple of C headers one gives the tileset data the other
+gives the tilemap data. It can also draw a preview image of the whole map. It
+can be found <a href="https://www.github.com/GregAC/pico-stuff/tree/main/pio_vga/make_tilemap_data.py">on
+github</a>.
+The example tilemap above will be my demo map.</p>
+<p>Drawing the tilemap is straight forward. First we define a structure to hold our
+tilemap data. Note it includes <code>scroll_x</code> and <code>scroll_y</code> fields. Our tilemap
+will be bigger than a single screen so we want to be able to move it around.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">struct</span> {
+    <span style="color:#75715e">// Width and height in tiles
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> width;
+    <span style="color:#66d9ef">int</span> height;
+
+    <span style="color:#75715e">// Pointer to tile data. Each uint16_t specifies which tile from the tileset should be
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// displayed. Storage is row major order, so consecutive elements of a row of tiles are next to
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// one another.
+</span><span style="color:#75715e"></span>    uint16_t<span style="color:#f92672">*</span> tiles;
+    <span style="color:#75715e">// Tileset data in RGB555 format
+</span><span style="color:#75715e"></span>    uint16_t<span style="color:#f92672">*</span> tileset;
+
+    <span style="color:#75715e">// X and Y scroll in pixels for the tilemap
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> y_scroll;
+    <span style="color:#66d9ef">int</span> x_scroll;
+} tilemap_info_t;
+</code></pre></td></tr></table>
+</div>
+</div><p>Then we need a function to draw a tilemap to a line. This is simpler than sprite
+drawing as everything is arranged to a fixed grid and there&rsquo;s no overlapping,
+priority order or transparency to deal with. Scrolling adds some slight
+complexity as you have to deal with partial tiles at the beginning and end of
+the line.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">45
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">46
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">47
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">48
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">49
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">50
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">51
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">52
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">53
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">54
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">55
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">56
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">57
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">58
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">59
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Return a pointer to a row of tiles from a tilemap. Line is specified in terms of tiles.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">inline</span> uint16_t<span style="color:#f92672">*</span> <span style="color:#a6e22e">get_tilemap_line</span>(<span style="color:#66d9ef">int</span> line, tilemap_info_t tilemap) {
+    <span style="color:#66d9ef">return</span> tilemap.tiles <span style="color:#f92672">+</span> line <span style="color:#f92672">*</span> tilemap.width;
+}
+
+<span style="color:#75715e">// Return a pointer to a row of pixels from a tile in a tileset
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">inline</span> uint16_t<span style="color:#f92672">*</span> <span style="color:#a6e22e">get_tile_line</span>(uint16_t tile_num, <span style="color:#66d9ef">int</span> tile_y, uint16_t<span style="color:#f92672">*</span> tileset) {
+    <span style="color:#66d9ef">return</span> tileset <span style="color:#f92672">+</span> tile_num <span style="color:#f92672">*</span> TILE_WIDTH <span style="color:#f92672">*</span> TILE_HEIGHT <span style="color:#f92672">+</span> tile_y <span style="color:#f92672">*</span> TILE_WIDTH;
+}
+
+<span style="color:#75715e">// Given a scanline Y, draw the relevant pixels from the tilemap into the scanline buffer
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">draw_tilemap_line</span>(uint16_t line_y, tilemap_info_t tilemap, uint16_t<span style="color:#f92672">*</span> line_buffer) {
+    <span style="color:#75715e">// Translate from screen pixel coordinates to tile pixel coordinates using the scroll
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> layer_y <span style="color:#f92672">=</span> line_y <span style="color:#f92672">+</span> tilemap.y_scroll;
+    <span style="color:#66d9ef">int</span> layer_x <span style="color:#f92672">=</span> tilemap.x_scroll;
+
+    <span style="color:#75715e">// Determine the tilemap Y of the line
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> tilemap_y <span style="color:#f92672">=</span> layer_y <span style="color:#f92672">/</span> TILE_HEIGHT;
+    <span style="color:#75715e">// Determine the pixel Y of the line within a tile
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> tile_y <span style="color:#f92672">=</span> layer_y <span style="color:#f92672">%</span> TILE_HEIGHT;
+
+    <span style="color:#75715e">// Determine the tilemap X of the leftmost pixel
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> tilemap_x <span style="color:#f92672">=</span> layer_x <span style="color:#f92672">/</span> TILE_WIDTH;
+    <span style="color:#75715e">// Determine the pixel X of the leftmost pixel within the first tile
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> first_tile_x <span style="color:#f92672">=</span> layer_x <span style="color:#f92672">%</span> TILE_HEIGHT;
+
+    <span style="color:#75715e">// Due to scroll the first and last tiles in the screen may only be partially displayed.
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// Determine with width of the first and last tiles
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> first_tile_visible_width <span style="color:#f92672">=</span> TILE_WIDTH <span style="color:#f92672">-</span> first_tile_x;
+    <span style="color:#66d9ef">int</span> last_tile_visible_width <span style="color:#f92672">=</span> first_tile_x;
+
+    <span style="color:#75715e">// Obtain a pointer to the tilemap data for this line
+</span><span style="color:#75715e"></span>    uint16_t<span style="color:#f92672">*</span> tilemap_line <span style="color:#f92672">=</span> get_tilemap_line(tilemap_y, tilemap) <span style="color:#f92672">+</span> tilemap_x;
+    <span style="color:#75715e">// Draw the first tile to the line, this is a special case as it may not be full width
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// Get a pointer to the pixels for the line in the first tile, offset by first_tile_x
+</span><span style="color:#75715e"></span>    uint16_t<span style="color:#f92672">*</span> first_tile_line <span style="color:#f92672">=</span> get_tile_line(<span style="color:#f92672">*</span>tilemap_line, tile_y, tilemap.tileset) <span style="color:#f92672">+</span> first_tile_x;
+    <span style="color:#75715e">// Draw it to the buffer by copying the pixels
+</span><span style="color:#75715e"></span>    memcpy(line_buffer, first_tile_line, first_tile_visible_width <span style="color:#f92672">*</span> <span style="color:#ae81ff">2</span>);
+
+    <span style="color:#f92672">++</span>tilemap_line;
+    line_buffer <span style="color:#f92672">+=</span> first_tile_visible_width;
+
+    <span style="color:#75715e">// Draw the remaining tiles in the line
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">for</span>(<span style="color:#66d9ef">int</span> tile <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;tile <span style="color:#f92672">&lt;</span> TILES_PER_LINE; <span style="color:#f92672">++</span>tile) {
+        <span style="color:#75715e">// Get a pointer to the pixels for the line in the tile
+</span><span style="color:#75715e"></span>        uint16_t<span style="color:#f92672">*</span> tile_line <span style="color:#f92672">=</span> get_tile_line(<span style="color:#f92672">*</span>tilemap_line, tile_y, tilemap.tileset);
+        <span style="color:#75715e">// Draw it to the buffer by copying the pixels
+</span><span style="color:#75715e"></span>        memcpy(line_buffer, tile_line, TILE_WIDTH <span style="color:#f92672">*</span> <span style="color:#ae81ff">2</span>);
+        line_buffer <span style="color:#f92672">+=</span> TILE_WIDTH;
+        <span style="color:#f92672">++</span>tilemap_line;
+    }
+
+    <span style="color:#75715e">// When the first tile is only a partial tile, so is the final tile. Draw that final partial 
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// tile here if required.
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span>(first_tile_x <span style="color:#f92672">!=</span> <span style="color:#ae81ff">0</span>) {
+        uint16_t<span style="color:#f92672">*</span> last_tile_line <span style="color:#f92672">=</span> get_tile_line(<span style="color:#f92672">*</span>tilemap_line, tile_y, tilemap.tileset);
+        memcpy(line_buffer, last_tile_line, last_tile_visible_width <span style="color:#f92672">*</span> <span style="color:#ae81ff">2</span>);
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>To bring everything together I added scrolling to the sprite drawing code (see
+<a href="https://www.github.com/GregAC/pico-stuff/tree/main/pio_vga/pio_vga_fifth.c#L323">github</a>
+to see the code), dropped the test pattern generation from the <code>draw_line</code>
+function and added the tile drawing leaving us with a very simple function:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">draw_line</span>(<span style="color:#66d9ef">int</span> line_y, uint16_t<span style="color:#f92672">*</span> line_buffer) {
+    <span style="color:#75715e">// For each line first draw the tilemap then the sprites over the top
+</span><span style="color:#75715e"></span>    draw_tilemap_line(line_y, test_tilemap, line_buffer);
+    draw_sprites_line(line_y, line_buffer);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>I also introduced an &lsquo;entity&rsquo;. Another structure that tracks a sprite along with
+some information to track how it should be moving and the animation to use.
+Here&rsquo;s the entity structure, check out
+<a href="https://www.github.com/GregAC/pico-stuff/tree/main/pio_vga/pio_vga_fifth.c#L560">github</a>
+to see the full code:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// Each entity is either stationary or moving in a horizontal or verical direction
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">enum</span> {
+    kMoveTypeNone,
+    kMoveTypeHorizontal,
+    kMoveTypeVertical,
+} move_type_e;
+
+<span style="color:#75715e">// Entity data. Each entity has an associated sprite that it controls. The entity processing code
+</span><span style="color:#75715e">// move the sprite around (horizontally or vertically) playing the appropriate walk animation
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">struct</span> {
+    <span style="color:#75715e">// Index of the sprite associated with the entity
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> sprite_idx;
+
+    <span style="color:#75715e">// Index of the character the entity is using
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> character_idx;
+    <span style="color:#75715e">// Which frame within the current animation is being displayed (which animation can be
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// determined from the move_type and whether we&#39;re increasing or decreasing position)
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">int</span> anim_frame;
+
+    <span style="color:#75715e">// The entity either doesn&#39;t move at all or moves strictly horizontally or vertically. This
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// specifies the bounds for the movement (X coordinate bound for horizontal movement, Y
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// coordinate bound for vertical movement) and whether we&#39;re increasing or decreasing the
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// relevant coordinate for the movement.
+</span><span style="color:#75715e"></span>    move_type_e move_type;
+    <span style="color:#66d9ef">int</span> move_lower_bound;
+    <span style="color:#66d9ef">int</span> move_upper_bound;
+    <span style="color:#66d9ef">bool</span> move_increase;
+
+    <span style="color:#75715e">// When true entity should be processed
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">bool</span> enabled;
+} entity_t;
+</code></pre></td></tr></table>
+</div>
+</div><p>Using this you can place a few animated entities around the map that move with
+appropriate walking animations. I also added some code to scroll the map and
+sprites together &lsquo;bouncing&rsquo; when it hit the edge of a map by reversing the
+scroll direction. Here&rsquo;s a video of the final result:</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/sprite-map-bounce.mp4" type="video/mp4">
+</video>
+<p>So what&rsquo;s next? We can look at further layers, we could have multiple tilemap
+layers allowing transparency in some (so we can have tiles overlap sprites) or
+add a text layer (potentially implemented as another tilemap just with different
+tile sizes). Of course we will hit performance limits at some point (we only
+have so many CPU cycles to draw a scanline in) and start getting graphical
+artifacts. So first up we need to look into our current performance, see how
+many spare cycles we have to work with and see if there&rsquo;s any way to improve our
+performance.</p>
+<p>Whilst experimenting I found an interesting bug that looks like a performance
+problem. I recreated my initial sprite test (with the 128 sprites cycling
+through different animation frames) with a tilemap background. It worked fine
+still I started scrolling around as well at which point graphical artifacts
+started appearing.</p>
+<p>After spending some time investigating I realised the graphical artifacts were
+only seen when the tilemap was scrolled in the X direction an odd number of
+pixels. Here&rsquo;s a little video that demonstrates the bug. It scrolls one pixel
+right roughly twice per second. We see the artifacts come and go with every
+pixel step until we&rsquo;ve got 8 or fewer sprites per line and suddenly everything
+works fine. A clear sign of a performance issue. For some reason a tilemap
+scrolled an odd number of pixels needs noticeably more cycles to draw than a
+tilemap scrolled an even number of pixels.</p>
+<video class="my-3" style="display:block; margin: 0 auto;" controls loop>
+  <source src="/media/play_pico/sprite-perf-bug.mp4" type="video/mp4">
+</video>
+<p>I have yet to look into the root cause of this. I suspect it&rsquo;s something to do
+with aligned vs unaligned memory access. With 0 scroll pixel 0 and 1 of the
+first tile are copied to pixel 0 and 1 of the scanline buffer and can be done
+with a single aligned 32-bit copy. With a 1 scroll pixel 1 and 2 of the first
+tile (pixel 0 is off screen) are copied to pixel 0 and 1 of the scanline buffer.
+Either two 16-bit copies or one unaligned 32-bit copy. I&rsquo;ll investigate in more
+detail in the next blog.</p>
+
+</div>
+
+</main>
+</body>
+</html>

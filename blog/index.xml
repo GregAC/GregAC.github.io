@@ -6,14 +6,26 @@
     <description>Recent content in Blog on Greg Chadwick</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-uk</language>
-    <lastBuildDate>Sun, 14 Mar 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Wed, 28 Apr 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Playing with the Pico Part 6 - Producing VGA Video</title>
+      <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt6/</link>
+      <pubDate>Wed, 28 Apr 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt6/</guid>
+      <description>In Part 5 we produced a simple video test pattern, how about something more interesting, like this?
+ Full code can be found on github
+This is the final result of the code discussed below, so how does it all work?
+It would be straight-forward to display a static image or framebuffer. With the 320x240 resolution and 2 bytes per pixel that&amp;rsquo;s 150 KiB which we can fit in the Pico&amp;rsquo;s memory.</description>
+    </item>
+    
     <item>
       <title>Playing with the Pico Part 5 - Producing VGA Video</title>
       <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt5/</link>
       <pubDate>Sun, 14 Mar 2021 12:00:00 +0000</pubDate>
       
       <guid>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt5/</guid>
-      <description>Lets talk about VGA signalling. VGA uses 5 lines, 3 are analog signals and represent red, green and blue, the higher the voltage the brighter the colour. The other 2 are sync and are digital signals, they tell the monitor how the colour signals relate to the pixels.
+      <description>Lets talk about VGA signalling. VGA uses 5 wires, 3 are analog signals and represent red, green and blue, the higher the voltage the brighter the colour. The other 2 are sync and are digital signals, they tell the monitor how the colour signals relate to the pixels.
 One of the sync signals is the horizontal sync (HSYNC), the other is the vertical (VSYNC). They both work in very similar ways, let&amp;rsquo;s take a look at the horizontal sync first.</description>
     </item>
     
