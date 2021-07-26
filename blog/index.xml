@@ -6,7 +6,16 @@
     <description>Recent content in Blog on Greg Chadwick</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-uk</language>
-    <lastBuildDate>Wed, 28 Apr 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Fri, 23 Jul 2021 12:00:00 +0000</lastBuildDate><atom:link href="https://gregchadwick.co.uk/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Building a RISC-V simulator in Rust - Part 1</title>
+      <link>https://gregchadwick.co.uk/blog/building-rrs-pt1/</link>
+      <pubDate>Fri, 23 Jul 2021 12:00:00 +0000</pubDate>
+      
+      <guid>https://gregchadwick.co.uk/blog/building-rrs-pt1/</guid>
+      <description>As way to gain some more experience using Rust I decided to implement a RISC-V instruction set simulation in Rust that I have imaginatively called rrs, the Rust RISC-V Simulator. So far I&amp;rsquo;ve implemented the RV32IM instruction set (For those unfamiliar with RISC-V this is all the basic instructions, ALU operations, branching, load/store, multiplication/division etc without any of the OS/system level stuff like exceptions or memory management and none of the more complex/interesting extensions like atomics).</description>
+    </item>
+    
     <item>
       <title>Playing with the Pico Part 6 - SNES like sprites and tilemap with VGA</title>
       <link>https://gregchadwick.co.uk/blog/playing-with-the-pico-pt6/</link>

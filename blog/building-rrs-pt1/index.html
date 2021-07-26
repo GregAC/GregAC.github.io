@@ -1,0 +1,1255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    
+    <script>
+    window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+    ga('create', 'UA-20991798-1', {'storage': 'none'});
+    ga('send', 'pageview');
+    </script>
+    <script async src='https://www.google-analytics.com/analytics.js'></script>
+    
+    
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Greg Chadwick - Building a RISC-V simulator in Rust - Part 1</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        padding-top: 5rem;
+      }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-light bg-light fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-brand ms-5">GAC</div>
+    <ul class="navbar-nav me-auto ">
+      <li class="nav-item mx-2"><a class="nav-link" href="/about">About</a></li>
+      <li class="nav-item mx-2"><a class="nav-link" href="/blog">Blog</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="container">
+  
+<div class="mx-auto" style="max-width: 900px">
+  <h1>Building a RISC-V simulator in Rust - Part 1</h1>
+  <p>As way to gain some more experience using <a href="https://www.rust-lang.org/">Rust</a> I
+decided to implement a RISC-V instruction set simulation in Rust that I have
+imaginatively called rrs, the Rust RISC-V Simulator. So far I&rsquo;ve implemented the
+RV32IM instruction set (For those unfamiliar with RISC-V this is all the basic
+instructions, ALU operations, branching, load/store, multiplication/division
+etc without any of the OS/system level stuff like exceptions or memory
+management and none of the more complex/interesting extensions like atomics).</p>
+<p><em>The full code for rrs can be found on <a href="https://www.github.com/GregAC/rrs">github</a>, this blog was written for the <a href="https://github.com/GregAC/rrs/tree/c2bb07e14fc684c5741d3ba368e51f828d68b518">c2bb07e commit</a></em></p>
+<p>If you&rsquo;re not familiar with Rust it&rsquo;s a compiled language initially developed by
+Mozilla as something that could replace C or C++ that provides various memory
+and thread safety guarantees to eliminate whole classes of bugs (e.g. buffer
+overruns). It can achieve this whilst still providing high performance. I won&rsquo;t
+discuss Rust at length here just a few aspects that are relevant to rrs. The
+<a href="https://doc.rust-lang.org/book">Rust Book</a> is a great way to learn the language
+if you want to find out more. <a href="https://rust-unofficial.github.io/too-many-lists/">Learn Rust With Entirely Too Many Linked
+Lists</a> is another good read.</p>
+<p>My initial aims with rrs were to produce something simple and modular without a
+big focus on performance (though I didn&rsquo;t want it to be too slow). Plus as this
+was a project to learn the language I wanted to use a reasonable set of Rust
+features to implement it.</p>
+<p>To aid modularity it is split into two separate parts (crates in Rust terms),
+<code>rrs-cli</code> and <code>rrs-lib</code>. <code>rrs-lib</code> is a collection of components that can be
+used to implement the ISS but offer flexibility in how they&rsquo;re used. The idea
+being that someone who wants ISS components but not just a monolithic ISS could
+use <code>rrs-lib</code> to implement whatever it is they&rsquo;re doing. For example a cycle
+accurate performance model of a CPU core would need to emulate RISC-V
+instructions but needs much more besides. It could use <code>rrs-lib</code> to implement
+RISC-V emulation and build the model on top of it.</p>
+<p>Another possible use would be co-simulation for validating a CPU design. The
+simulation of the CPU (e.g. written in a hardware description language like
+Verilog) runs alongside a RISC-V simulation (using <code>rrs-lib</code>) being continuously
+cross-checked ensuring instructions executed on the CPU do what the RISC-V
+simulation says they should.</p>
+<p>The second half is <code>rrs-cli</code>. This is a command line application that uses
+<code>rrs-lib</code> to execute compiled RISC-V binaries. At time of writing it has a very
+basic feature set. It can setup a simulated memory of any requested size at a
+given address, load a raw binary into it and then run it. It provides a couple
+of &lsquo;devices&rsquo; that allow the program to output to stdout and terminate the
+simulation.</p>
+<h2 id="processing-instructions">Processing Instructions</h2>
+<p>There are various strategies for implementing a instruction set simulator. A
+typical way is to use a giant <code>switch case</code> statement at its core. An
+instruction is fetched from a simulated memory, the opcode extracted, then the
+<code>switch case</code> used to execute the instruction based upon it&rsquo;s opcode. In
+pseudo-C:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c">uint32_t instruction <span style="color:#f92672">=</span> fetch_next_instruction();
+uint32_t opcode <span style="color:#f92672">=</span> instruction <span style="color:#f92672">&amp;</span> opcode_mask;
+
+<span style="color:#66d9ef">switch</span> (opcode) {
+  <span style="color:#66d9ef">case</span> OPCODE_X: execute_x(instruction);
+  <span style="color:#66d9ef">case</span> OPCODE_Y: execute_y(instruction);
+  ....
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This can be implemented using a structure called a &lsquo;jump table&rsquo; where instead of
+having to execute many comparisons to determine which opcode you have a table of
+code addresses is constructed. The opcode is extracted from the instruction then
+used to lookup in this table and you jump to the location given. Where you have
+many opcodes this can provide optimal performance.</p>
+<p>This switch case statement structure is what I&rsquo;ll use in <code>rrs-lib</code> though with a
+slight modifications to aid modularity.</p>
+<p>Rust doesn&rsquo;t actually have a <code>switch</code> statement, instead it has <code>match</code> which
+can do much the same thing but is far more powerful as it allows pattern
+matching using Rust&rsquo;s advanced type system. For the instruction processing this
+pattern matching isn&rsquo;t used but I&rsquo;ll have an example using pattern matching
+later.</p>
+<p>To give the modularity I wanted I created a <code>trait</code> which is a Rust concept
+similar to an interface in other languages such as Java or C# or a pure virtual
+class in C++. I called the trait <code>InstructionProcessor</code> and it contains one
+function per RISC-V instruction implemented. Here&rsquo;s part of the definition. I&rsquo;ve
+removed much of it for compactness but you should get the idea</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> InstructionProcessor {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">InstructionResult</span>;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_add</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_or</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_addi</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::IType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_ori</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::IType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_lui</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::UType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_auipc</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::UType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_beq</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::BType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_bne</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::BType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_blt</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::BType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_lw</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::IType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_sw</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::SType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_jal</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::JType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_mul</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_div</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+</code></pre></td></tr></table>
+</div>
+</div><p>A <code>trait</code> is implemented on a <code>struct</code> which is Rust&rsquo;s way of describing
+structured data.  You can implement functions for that <code>struct</code> (similar to
+classes in C++/C#/Java but Rust is not an object orientated language so they&rsquo;re
+not identical concepts). Each function in the <code>InstructionProcessor</code> trait takes
+a reference to the <code>struct</code> it is implemented on and a decoded version of the
+instruction to be processed and returns some result type
+(<code>Self::InstructionResult</code>). RISC-V has a variety of standard instruction
+formats (RType, IType etc) and I created a Rust <code>struct</code> for each of them. Each
+<code>struct</code> includes a function to create itself from a encoded instruction. Here&rsquo;s
+the <code>RType</code> <code>struct</code> definition:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">RType</span> {
+    <span style="color:#66d9ef">pub</span> funct7: <span style="color:#66d9ef">u32</span>,
+    <span style="color:#66d9ef">pub</span> rs2: <span style="color:#66d9ef">usize</span>,
+    <span style="color:#66d9ef">pub</span> rs1: <span style="color:#66d9ef">usize</span>,
+    <span style="color:#66d9ef">pub</span> funct3: <span style="color:#66d9ef">u32</span>,
+    <span style="color:#66d9ef">pub</span> rd: <span style="color:#66d9ef">usize</span>,
+}
+
+<span style="color:#66d9ef">impl</span> RType {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">new</span>(insn: <span style="color:#66d9ef">u32</span>) -&gt; <span style="color:#a6e22e">RType</span> {
+        RType {
+            funct7: (insn <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">25</span>) <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x7f</span>,
+            rs2: ((insn <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">20</span>) <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x1f</span>) <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>,
+            rs1: ((insn <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">15</span>) <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x1f</span>) <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>,
+            funct3: (insn <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">12</span>) <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x7</span>,
+            rd: ((insn <span style="color:#f92672">&gt;&gt;</span> <span style="color:#ae81ff">7</span>) <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x1f</span>) <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>,
+        }
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>The provides modularity as you can implement many different types of
+<code>InstructionProcessor</code> to do different things that operate on decoded
+instructions. Instruction execution is one thing we want to do but there are
+others . Disassembly is one example, which we can implement by building an
+<code>InstructionProcessor</code> that produces a string describing the instruction.
+Another example would be an instruction profiler, something that counts the
+number of times a particular instruction is used.</p>
+<p>A <code>process_instruction</code> function takes an encoded instruction and an
+<code>InstructionProcessor</code> and calls the appropriate <code>process_X</code> function. This is
+where we implemented our big <code>match</code> statement like our pseudo-C example above.
+As RISC-V decoding isn&rsquo;t as simple as masking out a single set of bits to
+identify what instruction to execute this is implemented over multiple
+functions. Here&rsquo;s <code>process_instruction</code> in full:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_instruction</span><span style="color:#f92672">&lt;</span>T: <span style="color:#a6e22e">InstructionProcessor</span><span style="color:#f92672">&gt;</span>(
+    processor: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> T,
+    insn_bits: <span style="color:#66d9ef">u32</span>,
+) -&gt; Option<span style="color:#f92672">&lt;</span>T::InstructionResult<span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">let</span> opcode: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> insn_bits <span style="color:#f92672">&amp;</span> <span style="color:#ae81ff">0x7f</span>;
+
+    <span style="color:#66d9ef">match</span> opcode {
+        instruction_formats::OPCODE_OP <span style="color:#f92672">=&gt;</span> process_opcode_op(processor, insn_bits),
+        instruction_formats::OPCODE_OP_IMM <span style="color:#f92672">=&gt;</span> process_opcode_op_imm(processor, insn_bits),
+        instruction_formats::OPCODE_LUI <span style="color:#f92672">=&gt;</span> {
+            Some(processor.process_lui(instruction_formats::UType::new(insn_bits)))
+        }
+        instruction_formats::OPCODE_AUIPC <span style="color:#f92672">=&gt;</span> {
+            Some(processor.process_auipc(instruction_formats::UType::new(insn_bits)))
+        }
+        instruction_formats::OPCODE_BRANCH <span style="color:#f92672">=&gt;</span> process_opcode_branch(processor, insn_bits),
+        instruction_formats::OPCODE_LOAD <span style="color:#f92672">=&gt;</span> process_opcode_load(processor, insn_bits),
+        instruction_formats::OPCODE_STORE <span style="color:#f92672">=&gt;</span> process_opcode_store(processor, insn_bits),
+        instruction_formats::OPCODE_JAL <span style="color:#f92672">=&gt;</span> {
+            Some(processor.process_jal(instruction_formats::JType::new(insn_bits)))
+        }
+        instruction_formats::OPCODE_JALR <span style="color:#f92672">=&gt;</span> {
+            Some(processor.process_jalr(instruction_formats::IType::new(insn_bits)))
+        }
+        _ <span style="color:#f92672">=&gt;</span> None,
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>At the top-level it reads an opcode and depending on which opcode it is we call
+into another function that deals with that opcode, e.g. here&rsquo;s part of
+<code>process_opcode_op</code> (which deals with the basic ALU instructions e.g. <code>add x1, x2, x3</code>):</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_opcode_op</span><span style="color:#f92672">&lt;</span>T: <span style="color:#a6e22e">InstructionProcessor</span><span style="color:#f92672">&gt;</span>(
+    processor: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> T,
+    insn_bits: <span style="color:#66d9ef">u32</span>,
+) -&gt; Option<span style="color:#f92672">&lt;</span>T::InstructionResult<span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">let</span> dec_insn <span style="color:#f92672">=</span> instruction_formats::RType::new(insn_bits);
+
+    <span style="color:#66d9ef">match</span> dec_insn.funct3 {
+        <span style="color:#ae81ff">0b000</span> <span style="color:#f92672">=&gt;</span> <span style="color:#66d9ef">match</span> dec_insn.funct7 {
+            <span style="color:#ae81ff">0b000_0000</span> <span style="color:#f92672">=&gt;</span> Some(processor.process_add(dec_insn)),
+            <span style="color:#ae81ff">0b000_0001</span> <span style="color:#f92672">=&gt;</span> Some(processor.process_mul(dec_insn)),
+            <span style="color:#ae81ff">0b010_0000</span> <span style="color:#f92672">=&gt;</span> Some(processor.process_sub(dec_insn)),
+            _ <span style="color:#f92672">=&gt;</span> None,
+        },
+        <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>        <span style="color:#ae81ff">0b111</span> <span style="color:#f92672">=&gt;</span> <span style="color:#66d9ef">match</span> dec_insn.funct7 {
+            <span style="color:#ae81ff">0b000_0000</span> <span style="color:#f92672">=&gt;</span> Some(processor.process_and(dec_insn)),
+            <span style="color:#ae81ff">0b000_0001</span> <span style="color:#f92672">=&gt;</span> Some(processor.process_remu(dec_insn)),
+            _ <span style="color:#f92672">=&gt;</span> None,
+        },
+        _ <span style="color:#f92672">=&gt;</span> None,
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p><code>process_opcode_op</code> does another level of matching to work out what instruction
+we have, decodes the instruction into an <code>RType</code> structure and calls the
+relevant function in the supplied <code>InstructionProcessor</code>.</p>
+<p><code>process_instruction</code> (and in turn the <code>process_X</code> functions it calls) returns
+an <code>Option</code> type. This can be <code>Some</code> or <code>None</code>. It returns <code>None</code> where the
+instruction couldn&rsquo;t be decoded (it&rsquo;s an invalid instruction or from an
+extension rrs doesn&rsquo;t yet implement). When it returns <code>Some</code> this includes the
+<code>InstructionResult</code> from the <code>InstructionProcessor</code>.</p>
+<p>Notably I&rsquo;ve used Rust generics here. Say we implemented something like this in
+C++ we could use an <code>InstructionProcessor</code> class with all virtual functions.
+We&rsquo;d pass a pointer to the class to <code>process_instruction</code> and it would call the
+relevant one. This will work but forces a virtual function call for each
+instruction processed, which is more expensive than a normal function call and
+cannot be inlined.</p>
+<p>We could do something similar in Rust but by using generics
+<code>process_instruction</code> knows what kind of <code>InstructionProcessor</code> it is being used
+with and can do a normal function call instead. This also gives the compiler the
+opportunity to inline the function calls so our nice nested structure with the
+modular <code>InstructionProcessor</code> could turn into a single monolithic function in
+machine code and remove all function call overhead.  Whether it actually does
+this (and whether that would actually be the most optimal thing to do) is
+anyone&rsquo;s guess but it offers the compiler good opportunities for optimisation. I
+may delve into what code is actually being generated at a later date.</p>
+<p>(Note you could do the same thing in C++ with templates)</p>
+<h2 id="executing-instructions">Executing Instructions</h2>
+<p>With <code>process_instruction</code> in place we can implement an <code>InstructionProcessor</code>
+that executes instructions. First we need a <code>struct</code> to represent our CPU state.
+RISC-V uses the term &lsquo;hart&rsquo; meaning hardware thread to mean a set of state we
+execute instructions against, so that struct is called <code>HartState</code>:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">9
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">HartState</span> {
+    <span style="color:#e6db74">/// x1 - x31 register values. The contents of index 0 (the x0 zero register) are ignored.
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> registers: [<span style="color:#66d9ef">u32</span>; <span style="color:#ae81ff">32</span>],
+    <span style="color:#e6db74">/// Program counter
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> pc: <span style="color:#66d9ef">u32</span>,
+    <span style="color:#e6db74">/// Gives index of the last register written if one occurred in the previous instruciton. Set
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// to `None` if latest instruction did not write a register.
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> last_register_write: Option<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">usize</span><span style="color:#f92672">&gt;</span>,
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>In order to implement the zero register (which ignores writes and always reads
+0) two functions are implemented on this struct for reading and writing
+registers:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span> HartState {
+    <span style="color:#e6db74">/// Write a register in the hart state. Used by executing instructions for correct zero
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// register handling
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">write_register</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, reg_index: <span style="color:#66d9ef">usize</span>, data: <span style="color:#66d9ef">u32</span>) {
+        <span style="color:#66d9ef">if</span> reg_index <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+            <span style="color:#66d9ef">return</span>;
+        }
+
+        self.registers[reg_index] <span style="color:#f92672">=</span> data;
+        self.last_register_write <span style="color:#f92672">=</span> Some(reg_index)
+    }
+
+    <span style="color:#e6db74">/// Read a register from the hart state. Used by executing instructions for correct zero
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// register handling
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_register</span>(<span style="color:#f92672">&amp;</span>self, reg_index: <span style="color:#66d9ef">usize</span>) -&gt; <span style="color:#66d9ef">u32</span> {
+        <span style="color:#66d9ef">if</span> reg_index <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+            <span style="color:#ae81ff">0</span>
+        } <span style="color:#66d9ef">else</span> {
+            self.registers[reg_index]
+        }
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>A separate <code>struct</code> <code>InstructionExecutor</code> will implement <code>InstructionProcessor</code>.
+We could implement this directly on <code>HartState</code> but the separate <code>struct</code> keeps
+things decoupled.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">InstructionExecutor</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span>, M: <span style="color:#a6e22e">Memory</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#e6db74">/// Memory used by load and store instructions
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> mem: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> M,
+    <span style="color:#66d9ef">pub</span> hart_state: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> HartState,
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>We&rsquo;ll discuss the <code>mem</code> field (that uses the <code>Memory</code> trait) below.</p>
+<p>Before we start implementing the various <code>process_X</code> functions we need to decide
+what return type will be used. We&rsquo;ll use the following:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">InstructionResult</span> <span style="color:#f92672">=</span> Result<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">bool</span>, InstructionException<span style="color:#f92672">&gt;</span>;
+</code></pre></div><p>The <code>Result</code> can be an <code>Ok</code> or an <code>Err</code>. Where it is <code>Ok</code> a <code>bool</code> is provided.
+This is <code>true</code> when the instruction updates the PC (e.g. because it is a jump or
+a taken branch) and <code>false</code> otherwise. When the instruction execution results in
+a exception the result is an <code>Err</code> providing an <code>InstructionException</code> which
+describes the exception.</p>
+<p>This done we can start implementing the <code>process_X</code> instructions, which is
+straight-forward but very repetitive, for example here&rsquo;s an <code>add</code>
+implementation:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_add</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult {
+    <span style="color:#66d9ef">let</span> a <span style="color:#f92672">=</span> self.hart_state.read_register(dec_insn.rs1);
+    <span style="color:#66d9ef">let</span> b <span style="color:#f92672">=</span> self.hart_state.read_register(dec_insn.rs2);
+    <span style="color:#66d9ef">let</span> result <span style="color:#f92672">=</span> a <span style="color:#f92672">+</span> b;
+    self.hart_state.write_register(dec_insn.rd, result);
+
+    Ok(<span style="color:#66d9ef">false</span>)
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This works fine but many other instructions will look almost identical, with
+just the <code>let result</code> line using a different operator. The <code>addi</code> instruction
+will also be very similar, this time using the same operation but taking the <code>b</code>
+from an immediate rather than a register read. Can we minimise this repetition?</p>
+<p>We&rsquo;ll do this in two steps, the first is implementing functions on
+<code>InstructionExecutor</code> to do some of the repetitive work, such as:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">9
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">execute_reg_reg_op</span><span style="color:#f92672">&lt;</span>F<span style="color:#f92672">&gt;</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType, op: <span style="color:#a6e22e">F</span>)
+<span style="color:#66d9ef">where</span>
+    F: Fn(<span style="color:#66d9ef">u32</span>, <span style="color:#66d9ef">u32</span>) -&gt; <span style="color:#66d9ef">u32</span>,
+{
+    <span style="color:#66d9ef">let</span> a <span style="color:#f92672">=</span> self.hart_state.read_register(dec_insn.rs1);
+    <span style="color:#66d9ef">let</span> b <span style="color:#f92672">=</span> self.hart_state.read_register(dec_insn.rs2);
+    <span style="color:#66d9ef">let</span> result <span style="color:#f92672">=</span> op(a, b);
+    self.hart_state.write_register(dec_insn.rd, result);
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This does the work of functions like <code>process_add</code> above but it takes the
+operation to perform as an argument (you provide it with a &lsquo;closure&rsquo; which
+effectively allows you to pass a function as an argument). <code>process_add</code> can
+then be implemented as:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_add</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult {
+  self.execute_reg_reg_op(dec_insn, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a <span style="color:#f92672">+</span> b)
+
+  Ok(<span style="color:#66d9ef">false</span>)
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>As <code>execute_reg_reg_op</code> uses generics the use of closures here shouldn&rsquo;t cause a
+performance issue. The compiler can inline the implementation rather than
+performing an extra function call to compute the operation.</p>
+<p>It&rsquo;d be nice to cut down the boilerplate further, to do so we&rsquo;ll turn to macros.
+In C and other C like languages macros are purely text based, arguments passed
+to a macro are textually inserted within it and whatever results fed to the
+compiler. In Rust macros work a bit differently <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>. They work on things called
+&lsquo;token trees&rsquo; which are part of the Rust compiler&rsquo;s parsing process. When
+defining a macro we specify kinds of token tree its arguments must match against
+(e.g. an expression or an identifier) and then an expansion for that match. We
+can define a macro that produces functions like <code>process_add</code> for us:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">macro_rules<span style="color:#f92672">!</span> make_alu_op_reg_fn {
+    (<span style="color:#75715e">$name</span>:<span style="color:#a6e22e">ident</span>, <span style="color:#75715e">$op_fn</span>:<span style="color:#a6e22e">expr</span>) <span style="color:#f92672">=&gt;</span> {
+        paste<span style="color:#f92672">!</span> {
+            <span style="color:#66d9ef">fn</span> [<span style="color:#f92672">&lt;</span>process_ <span style="color:#75715e">$name</span><span style="color:#f92672">&gt;</span>](
+                <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+                dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType
+            ) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult {
+                self.execute_reg_reg_op(dec_insn, <span style="color:#75715e">$op_fn</span>);
+
+                Ok(<span style="color:#66d9ef">false</span>)
+            }
+        }
+    };
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>To implement add we&rsquo;d use it like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">make_alu_op_reg_fn<span style="color:#f92672">!</span> {add, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a <span style="color:#f92672">+</span> b}
+</code></pre></div><p>Much more compact with a nice clear relation between the instruction name and the
+operation it performs. We can go one step further to remove the repetition
+between instructions like <code>add</code> and <code>addi</code>. Both implement the same operation
+and given the name of one we can work out the name of the other. So we define
+another macro that implements the register/register version and the
+register/immediate version together</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">macro_rules<span style="color:#f92672">!</span> make_alu_op_fns {
+    (<span style="color:#75715e">$name</span>:<span style="color:#a6e22e">ident</span>, <span style="color:#75715e">$op_fn</span>:<span style="color:#a6e22e">expr</span>) <span style="color:#f92672">=&gt;</span> {
+        make_alu_op_reg_fn<span style="color:#f92672">!</span> {<span style="color:#75715e">$name</span>, <span style="color:#75715e">$op_fn</span>}
+        make_alu_op_imm_fn<span style="color:#f92672">!</span> {<span style="color:#75715e">$name</span>, <span style="color:#75715e">$op_fn</span>}
+    };
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>The <code>make_alu_op_imm_fn</code> is much like the <code>make_alu_op_reg_fn</code> above just
+implementing the register/immediate version of the operation and adding an &lsquo;i&rsquo;
+to the function name. With this all done we get a nice compact implementation of
+the various register/register and register/immediate operations</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">make_alu_op_fns<span style="color:#f92672">!</span> {add, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a.wrapping_add(b)}
+make_alu_op_reg_fn<span style="color:#f92672">!</span> {sub, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a.wrapping_sub(b)}
+make_alu_op_fns<span style="color:#f92672">!</span> {slt, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> <span style="color:#66d9ef">if</span> (a <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">i32</span>) <span style="color:#f92672">&lt;</span> (b <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">i32</span>) {<span style="color:#ae81ff">1</span>} <span style="color:#66d9ef">else</span> {<span style="color:#ae81ff">0</span>}}
+make_alu_op_fns<span style="color:#f92672">!</span> {sltu, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> <span style="color:#66d9ef">if</span> a <span style="color:#f92672">&lt;</span> b {<span style="color:#ae81ff">1</span>} <span style="color:#66d9ef">else</span> {<span style="color:#ae81ff">0</span>}}
+make_alu_op_fns<span style="color:#f92672">!</span> {or, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a <span style="color:#f92672">|</span> b}
+make_alu_op_fns<span style="color:#f92672">!</span> {and, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a <span style="color:#f92672">&amp;</span> b}
+make_alu_op_fns<span style="color:#f92672">!</span> {xor, <span style="color:#f92672">|</span>a, b<span style="color:#f92672">|</span> a <span style="color:#f92672">^</span> b}
+</code></pre></td></tr></table>
+</div>
+</div><p>Note the use of <code>wrapping_add</code> and <code>wrapping_sub</code>. This is due to Rust&rsquo;s
+approach to safety. It considers an overflow in an addition or a subtraction an
+error, which it checks for in debug builds and causes a panic (which kills the
+program with an error message) if it detects one. The <code>wrapping_add</code> and
+<code>wrapping_sub</code> tell Rust we don&rsquo;t consider overflows to be an error and want to
+wrap around when one happens which matches the semantics of the RISC-V add and
+sub instructions.</p>
+<p>I&rsquo;ll skip the explanations for the other instructions so check out the source if
+you want to see the details for those.</p>
+<h2 id="disassembling-instructions">Disassembling Instructions</h2>
+<p>To implement instruction disassembly we implement a new <code>InstructionProcessor</code>
+that has an <code>InstructionResult</code> type of <code>String</code>. We&rsquo;ll implement
+<code>InstructionProcessor</code> on a new <code>struct</code> <code>InstructionStringOutputter</code>. As with
+<code>InstructionExecutor</code> the implementation of an individual instruction processing
+function is straight-forward and repetitive:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_add</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult {
+  format<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;add x{}, x{}, x{}&#34;</span>, dec_insn.rd, dec_insn.rs1, dec_insn.rs2)
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>Once again we turn to macros to cut down on the repetition. This time we&rsquo;ve got
+groups of function where the only thing changing is the function name and the
+mnemonic (<code>add</code>, <code>sub</code>, <code>or</code> etc). We can use another macro feature here,
+variable arguments:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">macro_rules<span style="color:#f92672">!</span> string_out_for_alu_reg_op {
+    (<span style="color:#75715e">$name</span>:<span style="color:#a6e22e">ident</span>) <span style="color:#f92672">=&gt;</span> {
+        paste<span style="color:#f92672">!</span> {
+            <span style="color:#66d9ef">fn</span> [<span style="color:#f92672">&lt;</span>process_ <span style="color:#75715e">$name</span><span style="color:#f92672">&gt;</span>](
+                <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+                dec_insn: <span style="color:#a6e22e">instruction_formats</span>::RType
+            ) -&gt; <span style="color:#a6e22e">Self</span>::InstructionResult {
+                format<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{} x{}, x{}, x{}&#34;</span>, stringify<span style="color:#f92672">!</span>(<span style="color:#75715e">$name</span>), dec_insn.rd, dec_insn.rs1,
+                    dec_insn.rs2)
+            }
+        }
+    };
+}
+
+<span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+macro_rules<span style="color:#f92672">!</span> string_out_for_alu_ops {
+    (<span style="color:#75715e">$($name</span>:<span style="color:#a6e22e">ident</span>),<span style="color:#f92672">*</span>) <span style="color:#f92672">=&gt;</span> {
+        <span style="color:#75715e">$(</span>
+            string_out_for_alu_reg_op<span style="color:#f92672">!</span> {<span style="color:#75715e">$name</span>}
+            string_out_for_alu_imm_op<span style="color:#f92672">!</span> {<span style="color:#75715e">$name</span>}
+        )<span style="color:#f92672">*</span>
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>The <code>string_out_for_alu_reg_op</code> implements our disassembly function for a
+particular named instruction. <code>string_out_for_alu_ops</code> takes multiple
+instruction names and applies <code>string_out_for_alu_reg_op</code> and
+<code>string_out_for_alu_imm_op</code> to each of them in turn (<code>string_out_for_alu_imm_op</code>
+is the immediate processing version of <code>string_out_for_alu_reg_op</code>). This gives
+us a nice compact implementation of <code>InstructionProcessor</code>:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span> InstructionProcessor <span style="color:#66d9ef">for</span> InstructionStringOutputter {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">InstructionResult</span> <span style="color:#f92672">=</span> String;
+
+    string_out_for_alu_ops<span style="color:#f92672">!</span> {add, slt, xor, or, and}
+
+    <span style="color:#75715e">//....
+</span><span style="color:#75715e"></span>}
+</code></pre></td></tr></table>
+</div>
+</div><p>This gives us something that given a 32-bit RISC-V instruction can output the
+disassembly. This can be used by the ISS to output disassembled instructions to
+a log file as they are executed like so:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// `insn_pc` used to disassemble branch instructions, not required in this
+</span><span style="color:#75715e">// example but the field must be set to something.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> outputter <span style="color:#f92672">=</span> InstructionStringOutputter { insn_pc: <span style="color:#ae81ff">0</span> };
+
+<span style="color:#75715e">// Result is &#34;addi x17, x12, 123&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">let</span> disassembly <span style="color:#f92672">=</span> rrs_lib::process_instruction(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> outputter, <span style="color:#ae81ff">0x07b60893</span>);
+</code></pre></td></tr></table>
+</div>
+</div><p>Again I&rsquo;ve skipped over implementations for the other instructions, check out
+the source to see how they work.</p>
+<h2 id="memories">Memories</h2>
+<p>We need a way to implement a simulated memory. On top of &lsquo;normal&rsquo; RAM, devices
+are also represented as memories. For instance you could have a memory that when
+written to outputs the byte written as a character to standard out. So we&rsquo;ll
+have a new trait <code>Memory</code> so we can implement different kinds of memory.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> Memory: <span style="color:#a6e22e">Downcast</span> {
+    <span style="color:#e6db74">/// Read `size` bytes from `addr`.
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">///
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// `addr` must be aligned to `size`.
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// Returns `None` if `addr` doesn&#39;t exist in this memory.
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_mem</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, addr: <span style="color:#66d9ef">u32</span>, size: <span style="color:#a6e22e">MemAccessSize</span>) -&gt; Option<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>;
+
+    <span style="color:#e6db74">/// Write `size` bytes of `store_data` to `addr`
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">///
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// `addr` must be aligned to `size`.
+</span><span style="color:#e6db74"></span>    <span style="color:#e6db74">/// Returns `true` if write succeeds.
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">write_mem</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, addr: <span style="color:#66d9ef">u32</span>, size: <span style="color:#a6e22e">MemAccessSize</span>, store_data: <span style="color:#66d9ef">u32</span>) -&gt; <span style="color:#66d9ef">bool</span>;
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>A straight-forward interface with one function to read and another to write is
+all we need, though it does have one peculiarity that&rsquo;s needed due to how Rust
+works and that&rsquo;s the <code>Downcast</code> bit.</p>
+<p>Before explaining let&rsquo;s take a look at a <code>Memory</code> implementation, <code>MemorySpace</code>.
+The <code>HartState</code> structure has a single reference to a <code>Memory</code> that is used for
+all load and store instructions but we may want multiple memories (e.g. a
+&lsquo;normal&rsquo; RAM along with some devices). <code>MemorySpace</code> allows us to do this by
+holding multiple memories along with a base address and size. When it gets a
+<code>read_mem</code> or <code>write_mem</code> call it works out which memory the address belongs to
+and forward the call on.  It uses the following function to add memories:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">8
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">add_memory</span>(
+    <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+    base: <span style="color:#66d9ef">u32</span>,
+    size: <span style="color:#66d9ef">u32</span>,
+    memory: Box<span style="color:#f92672">&lt;</span>dyn Memory<span style="color:#f92672">&gt;</span>,
+) -&gt; Result<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">usize</span>, MemorySpaceError<span style="color:#f92672">&gt;</span> {
+  <span style="color:#75715e">//...
+</span><span style="color:#75715e"></span>}
+</code></pre></td></tr></table>
+</div>
+</div><p>The <code>Box&lt;dyn Memory&gt;</code> is a dynamic reference to a <code>Memory</code> trait. Unlike when
+you&rsquo;re using generics <code>add_memory</code> and <code>MemorySpace</code> itself don&rsquo;t know the
+actual type being used so a dynamic dispatch mechanism is used when calling
+<code>read_mem</code> and <code>write_mem</code>. This is useful here as it allows <code>MemorySpace</code> to
+have many different kinds of memory.</p>
+<p>Users of <code>rrs-lib</code> may want to retain a reference to any memory they add to a
+<code>MemorySpace</code> (if it&rsquo;s a device there may be some other way it needs to be
+interacted with or they may want &lsquo;backdoor&rsquo; access to the memory rather than
+using the <code>read_mem</code>/<code>write_mem</code> functions). In any other language this would be
+simple, just hold a copy of the reference elsewhere, this is harder in Rust due
+to its safety properties.</p>
+<p>Rust provides automatic memory management without needing a garbage collector as
+well as providing various safety properties. It does this with some strict rules
+around what can have a reference to something and ensuring any allocated memory
+has a single owner.</p>
+<p>A reference can be handed out to a structure provided that reference doesn&rsquo;t out
+live the owner of the structure. Then when the owner goes out of scope Rust
+knows it can safely deallocate the memory. Multiple references can exist to a
+structure but only one mutable reference can exist (which allows you to alter the
+structure). Something called the &lsquo;borrow checker&rsquo; enforces these rules ensuring
+reference lifetimes are strictly shorter or the same as owner lifetimes. The
+borrow checker runs at compile time. This gives automatic memory management
+without run-time overhead but does restrict what you&rsquo;re able to do.</p>
+<p>The <code>add_memory</code> function takes ownership of whatever memory is added to it and
+the borrow checker won&rsquo;t allow whatever calls <code>add_memory</code> to retain a reference
+(mutable or otherwise) to the memory as the borrow checker can&rsquo;t ensure the
+<code>MemorySpace</code> outlives the reference at compile time.</p>
+<p>The way around this is to add functionality to <code>MemorySpace</code> which allows you to
+get a reference or a mutable reference to a particular memory. <code>add_memory</code>
+returns an index (the <code>usize</code> in the <code>Result</code>) which can be used to get a
+reference to the memory again at a later point in the program.</p>
+<p>We&rsquo;re not quite done though, this is where the <code>Downcast</code> is important <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup>. As you
+might expect Rust doesn&rsquo;t just let you convert between types as you wish. In C++
+for instance if we had a <code>Memory*</code> we could convert it to some other
+<code>SpecificMemory*</code>. In Rust we cannot just convert our <code>Box&lt;dyn Memory&gt;</code> into a
+<code>Box&lt;SpecificMemory&gt;</code> or a <code>&amp; SpecificMemory</code>. The <code>Downcast</code> bit in our
+<code>Memory</code> allows us to do this though, in a safe, checked way. Here&rsquo;s the
+implementation of <code>get_memory_ref</code> that gives you a reference to a previously
+added memory.</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">6
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Get a reference to an inner memory
+</span><span style="color:#e6db74">///
+</span><span style="color:#e6db74">/// This performs downcasting to the provided `T`. `None` is returned where the downcast fails.
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">get_memory_ref</span><span style="color:#f92672">&lt;</span>T: <span style="color:#a6e22e">Memory</span><span style="color:#f92672">&gt;</span>(<span style="color:#f92672">&amp;</span>self, index: <span style="color:#66d9ef">usize</span>) -&gt; Option<span style="color:#f92672">&lt;&amp;</span>T<span style="color:#f92672">&gt;</span> {
+    self.memory_regions.get(index)<span style="color:#f92672">?</span>.memory.downcast_ref::<span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span>()
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This is a generic function, a caller specifies the type they expect a memory to
+be and it returns an <code>Option</code> which will be <code>Some</code> if the memory is of that
+type, providing a reference to it and <code>None</code> if the memory is of a different
+type or the index doesn&rsquo;t exist.</p>
+<h2 id="bringing-it-all-together">Bringing it all together</h2>
+<p>We&rsquo;ve now got all the bits and pieces we need to execute a RISC-V binary we just
+need to bring them together. First let&rsquo;s look at the <code>step</code> function of
+<code>InstructionExecutor</code>. This fetches an instruction from memory, executes it,
+then increments the PC to point to the next instruction as needed:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Execute instruction pointed to by `hart_state.pc`
+</span><span style="color:#e6db74">///
+</span><span style="color:#e6db74">/// Returns `Ok` where instruction execution was successful. `Err` with the relevant
+</span><span style="color:#e6db74">/// [InstructionException] is returned when the instruction execution causes an exception.
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">step</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; Result<span style="color:#f92672">&lt;</span>(), InstructionException<span style="color:#f92672">&gt;</span> {
+    self.hart_state.last_register_write <span style="color:#f92672">=</span> None;
+
+    <span style="color:#75715e">// Fetch next instruction from memory
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(next_insn) <span style="color:#f92672">=</span> self.mem.read_mem(self.hart_state.pc, MemAccessSize::Word) {
+        <span style="color:#75715e">// Execute the instruction
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> step_result <span style="color:#f92672">=</span> process_instruction(self, next_insn);
+
+        <span style="color:#66d9ef">match</span> step_result {
+            Some(Ok(pc_updated)) <span style="color:#f92672">=&gt;</span> {
+                <span style="color:#66d9ef">if</span> <span style="color:#f92672">!</span>pc_updated {
+                    <span style="color:#75715e">// Instruction didn&#39;t update PC so increment to next instruction
+</span><span style="color:#75715e"></span>                    self.hart_state.pc <span style="color:#f92672">+=</span> <span style="color:#ae81ff">4</span>;
+                }
+                Ok(())
+            }
+            <span style="color:#75715e">// Instruction produced an error so return it
+</span><span style="color:#75715e"></span>            Some(Err(e)) <span style="color:#f92672">=&gt;</span> Err(e),
+            <span style="color:#75715e">// Instruction decode failed so return an IllegalInstruction as an error
+</span><span style="color:#75715e"></span>            None <span style="color:#f92672">=&gt;</span> Err(InstructionException::IllegalInstruction(
+                self.hart_state.pc,
+                next_insn,
+            )),
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Return a FetchError as an error if instruction fetch fails
+</span><span style="color:#75715e"></span>        Err(InstructionException::FetchError(self.hart_state.pc))
+    }
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>This uses the pattern matching with the <code>match</code> statement I reference above.
+<code>process_instructon</code> returns a nested data type <code>Option&lt;Result&lt;bool, InstructionException&gt;&gt;</code>. The outer option is <code>None</code> if the instruction can&rsquo;t be
+decoded. If it is <code>Some</code> we either have a <code>Ok</code> in the inner result or an <code>Err</code>.
+We can use a single <code>match</code> to cover all possibilities by using pattern matching
+on the inner structure.</p>
+<p>That&rsquo;s it for functionality in <code>rrs-lib</code>. I won&rsquo;t go over all the details of how
+<code>rrs-cli</code> works let&rsquo;s just take a look at the function that runs the simulation:</p>
+<div class="highlight"><div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4">
+<table style="border-spacing:0;padding:0;margin:0;border:0;width:auto;overflow:auto;display:block;"><tr><td style="vertical-align:top;padding:0;margin:0;border:0;">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 1
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 2
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 3
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 4
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 5
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 6
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 7
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 8
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"> 9
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">10
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">11
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">12
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">13
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">14
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">15
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">16
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">17
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">18
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">19
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">20
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">21
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">22
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">23
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">24
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">25
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">26
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">27
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">28
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">29
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">30
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">31
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">32
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">33
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">34
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">35
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">36
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">37
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">38
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">39
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">40
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">41
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">42
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">43
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">44
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">45
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">46
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">47
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">48
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">49
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">50
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">51
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">52
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">53
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">54
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">55
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">56
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">57
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">58
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">59
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">60
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">61
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">62
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">63
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">64
+</span><span style="margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f">65
+</span></code></pre></td>
+<td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%">
+<pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">run_sim</span>(sim_environment: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> SimEnvironment) {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> executor <span style="color:#f92672">=</span> InstructionExecutor {
+        hart_state: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> sim_environment.hart_state,
+        mem: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> sim_environment.memory_space,
+    };
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> insn_count: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">let</span> start <span style="color:#f92672">=</span> Instant::now();
+
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(log_file) <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> sim_environment.log_file {
+            <span style="color:#75715e">// Output current instruction disassembly to log
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> insn_bits <span style="color:#f92672">=</span> executor
+                .mem
+                .read_mem(executor.hart_state.pc, MemAccessSize::Word)
+                .unwrap_or_else(<span style="color:#f92672">||</span> panic<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Could not read PC {:08x}&#34;</span>, executor.hart_state.pc));
+
+            <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> outputter <span style="color:#f92672">=</span> InstructionStringOutputter {
+                insn_pc: <span style="color:#a6e22e">executor</span>.hart_state.pc,
+            };
+
+            writeln<span style="color:#f92672">!</span>(
+                log_file,
+                <span style="color:#e6db74">&#34;{:x} {}&#34;</span>,
+                executor.hart_state.pc,
+                rrs_lib::process_instruction(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> outputter, insn_bits).unwrap()
+            ).expect(<span style="color:#e6db74">&#34;Log file write failed&#34;</span>);
+        }
+
+        <span style="color:#75715e">// Execute instruction
+</span><span style="color:#75715e"></span>        executor.step().expect(<span style="color:#e6db74">&#34;Exception during execution&#34;</span>);
+
+        insn_count <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+        <span style="color:#75715e">// Stop if stop requested by emulated binary via SimulationCtrlDevice
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">if</span> executor
+            .mem
+            .get_memory_ref::<span style="color:#f92672">&lt;</span>SimulationCtrlDevice<span style="color:#f92672">&gt;</span>(sim_environment.sim_ctrl_dev_idx)
+            .unwrap()
+            .stop
+        {
+            <span style="color:#66d9ef">break</span>;
+        }
+
+        <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(log_file) <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> sim_environment.log_file {
+            <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(reg_index) <span style="color:#f92672">=</span> executor.hart_state.last_register_write {
+                <span style="color:#75715e">// Output register written by instruction to log if it wrote to one
+</span><span style="color:#75715e"></span>                writeln<span style="color:#f92672">!</span>(
+                    log_file,
+                    <span style="color:#e6db74">&#34;x{} = {:08x}&#34;</span>,
+                    reg_index, executor.hart_state.registers[reg_index]
+                ).expect(<span style="color:#e6db74">&#34;Log file write failed&#34;</span>);
+            }
+        }
+    }
+
+    <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> start.elapsed();
+    <span style="color:#66d9ef">let</span> mhz <span style="color:#f92672">=</span> (insn_count <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">f64</span>) <span style="color:#f92672">/</span> (elapsed.as_micros() <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">f64</span>);
+    println<span style="color:#f92672">!</span>(
+        <span style="color:#e6db74">&#34;{} instructions executed in {} ms {} MHz&#34;</span>,
+        insn_count,
+        elapsed.as_millis(),
+        mhz
+    );
+}
+</code></pre></td></tr></table>
+</div>
+</div><p>It sets up an <code>InstructionExecutor</code> with a supplied <code>HartState</code> and
+<code>MemorySpace</code> which are created by <code>rrs-cli</code> before it calls <code>run_sim</code>. It
+enters a loop and steps the executor optionally writing disassembly (using
+<code>InstructionstringOutputter</code>) and register writes out to a log. There is a
+special <code>SimulationCtrlDevice</code> memory that we can write to to stop the
+simulation. <code>MemorySpace::get_memory_ref</code> is used to access this and see if a
+stop has been asked for terminating the simulation if so.</p>
+<h2 id="performance-and-testing">Performance and Testing</h2>
+<p>Finally a word on the performance of rrs and the testing methodology.</p>
+<p>As way to test performance and test the implementation I ran the
+<a href="https://www.eembc.org/coremark/">CoreMark</a> benchmark on rrs. The actual
+benchmark result is meaningless but what is interesting is how many instructions
+per second rrs can execute. A run of a 1000 CoreMark iterations on my Thinkpad
+490s (with an Intel i7-8565U) executes 275063040 instructions in 5.28s, giving
+us an instructions per second of 52.1 MHz. My CPU has a turbo frequency of 4.6
+GHz and a 5 way decode so could execute at most 23 Billion instructions per
+second giving a ratio of ~440 real CPU instructions per emulated RISC-V
+instruction and in reality we won&rsquo;t be near that theoretical max instructions
+per second so the ratio may be more like 200 or lower. A pretty decent result
+given I wasn&rsquo;t trying hard to achieve high performance. Room for improvement
+though, at a later date I may take a look at how to improve performance.</p>
+<p>I ran the same Coremark binary on
+<a href="https://github.com/riscv/riscv-isa-sim">Spike</a> using <code>time</code> to measure
+execution time, this gave a wall clock time of 8.852 vs 5.376 for rrs-cli (this
+is total run time including initialisation), so rrs is ~60% faster. Spike is a
+far more complete and featureful simulator so it&rsquo;s not a entirely fair
+comparison but still rrs stacks up well.</p>
+<p>CoreMark also helps test rrs. It computes a checksum during the benchmark and
+checks against an expected value. This would fail if the benchmark executed
+incorrectly. CoreMark should give a reasonable workout of the RV32IM instruction
+set so this is a decent test of functionality.</p>
+<p>On top of running CoreMark I&rsquo;ve got a small set of tests in Rust. So far these
+test:</p>
+<ul>
+<li>The instruction format structures (e.g. <code>instruction_formats::RType</code>) decode
+instructions correctly.</li>
+<li><code>InstructionStringOuptter</code> produces a correct string for all implemented
+instructions. This checks that both <code>InstructionStringOutputter</code> and
+<code>process_instruction</code> are doing the right thing.</li>
+<li><code>InstructionExecutor</code> correctly executes a small program that uses each
+&lsquo;kind&rsquo; of instruction (a branch and a load are different kinds, an add and a
+sub are not).</li>
+<li>The various <code>Memory</code> implementations function correctly.</li>
+</ul>
+<p>In particular I don&rsquo;t have any Rust tests exhaustively testing the execution of
+all instructions. Instead I plan to use tests like CoreMark and the <a href="https://github.com/riscv/riscv-arch-test">RISC-V
+Architectural Test Framework</a>. I&rsquo;d
+want to run these tests regardless of other tests (as demonstrating succesful
+execution of binaries is clearly important) and separate per instruction tests
+in Rust would mostly duplicate this so I decided to spend effort elsewhere.</p>
+<h2 id="whats-next">What&rsquo;s Next</h2>
+<p>There&rsquo;s a few things I&rsquo;d like to work on next in the rough order I&rsquo;ll tackle
+them:</p>
+<ul>
+<li>An example RISC-V software build flow</li>
+<li>Run the <a href="https://github.com/riscv/riscv-arch-test">RISC-V Architectural Test Framework</a></li>
+<li>Implement exception handling</li>
+<li>Implement page tables</li>
+<li>Implement a <a href="https://en.wikipedia.org/wiki/Devicetree">device tree</a> for
+rrs-cli either the DTS format used by Linux or something custom.</li>
+<li>Get <a href="https://github.com/mit-pdos/xv6-riscv">xv6-riscv</a> running</li>
+<li>Implement debug support</li>
+<li>Get Linux running?</li>
+</ul>
+<p>In doing some of these I&rsquo;ll likely need to implement some more extensions (such
+as F for floating point and A for atomics).</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>The <a href="https://danielkeep.github.io/tlborm/book/index.html">Little Book of Rust Macros</a> is good guide to Rust macros if you want to learn more <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>This isn&rsquo;t a native language feature, it&rsquo;s a external crate <a href="https://docs.rs/downcast-rs/1.2.0/downcast_rs/">downcast-rs</a> <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+</div>
+
+</main>
+</body>
+</html>
